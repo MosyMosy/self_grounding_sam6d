@@ -7,6 +7,8 @@ from utils.inout import save_json, load_json, save_npz
 from utils.bbox_utils import xyxy_to_xywh, xywh_to_xyxy, force_binary_mask
 import time
 from PIL import Image
+from pycocotools import mask as maskUtils
+
 
 lmo_object_ids = np.array(
     [
@@ -149,6 +151,41 @@ class Detections:
         for key in self.keys:
             a = getattr(self, key)
             setattr(self, key, torch.from_numpy(getattr(self, key)))
+
+    def save_to_coco_format(
+        self, scene_id, frame_id, runtime, dataset_name
+    ):
+        bboxes = xyxy_to_xywh(self.boxes)
+        category_ids = (
+            self.object_ids + 1
+            if dataset_name != "lmo"
+            else lmo_object_ids[self.object_ids]
+        )
+        B, _ = bboxes.shape
+        coco_results = []
+
+        for i in range(B):
+            if self.masks is not None:
+                mask = self.masks[i].astype(np.uint8)
+                rle = maskUtils.encode(np.asfortranarray(mask))  # RLE encoding
+                rle["counts"] = rle["counts"].decode(
+                    "utf-8"
+                )  # Ensure JSON serializability
+            else:
+                rle = None
+
+            result = {
+                "scene_id": scene_id,  # Add scene ID
+                "image_id": frame_id,  # Image ID
+                "category_id": category_ids[i],  # Object category ID
+                "bbox": bboxes[i].tolist(),  # Bounding box (x, y, width, height)
+                "score": self.scores[i],  # Confidence score
+                "time": float(runtime),  # Prediction time
+                "segmentation": rle,  # mask_to_rle(mask),  # RLE-encoded segmentation
+            }
+            coco_results.append(result)
+
+        return coco_results
 
     def save_to_file(
         self, scene_id, frame_id, runtime, file_path, dataset_name, return_results=False
