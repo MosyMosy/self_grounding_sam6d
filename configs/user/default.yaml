@@ -1,0 +1,2 @@
+local_root_dir: /export/datasets/public/3d
+slurm_root_dir: data
