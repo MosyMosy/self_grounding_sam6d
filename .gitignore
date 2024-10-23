@@ -169,3 +169,5 @@ checkpoints/
 offline_data/
 .vscode/
 external_packages/*
+lightning_logs/
+log/

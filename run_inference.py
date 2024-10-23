@@ -5,10 +5,9 @@ from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 from torch.utils.data import DataLoader
 
-
 @hydra.main(
     version_base=None,
-    config_path="/export/livia/home/vision/Myazdanpanah/projects/self_grounding_sam6d/configs",
+    config_path="/export/livia/home/vision/Myazdanpanah/projects/self_grounding_sam6d/configs/",
     config_name="run_inference",
 )
 def run_inference(cfg: DictConfig):

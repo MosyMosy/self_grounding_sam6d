@@ -152,7 +152,7 @@ class Detections:
             a = getattr(self, key)
             setattr(self, key, torch.from_numpy(getattr(self, key)))
 
-    def save_to_coco_format(
+    def convert_to_coco_format(
         self, scene_id, frame_id, runtime, dataset_name
     ):
         bboxes = xyxy_to_xywh(self.boxes)
@@ -177,9 +177,9 @@ class Detections:
             result = {
                 "scene_id": scene_id,  # Add scene ID
                 "image_id": frame_id,  # Image ID
-                "category_id": category_ids[i],  # Object category ID
-                "bbox": bboxes[i].tolist(),  # Bounding box (x, y, width, height)
-                "score": self.scores[i],  # Confidence score
+                "category_id": int(category_ids[i]),  # Object category ID
+                "bbox": [float(b) for b in bboxes[i].tolist()],  # Bounding box (x, y, width, height)
+                "score": float(self.scores[i]),  # Confidence score
                 "time": float(runtime),  # Prediction time
                 "segmentation": rle,  # mask_to_rle(mask),  # RLE-encoded segmentation
             }

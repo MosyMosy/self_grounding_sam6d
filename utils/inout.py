@@ -4,6 +4,7 @@ import shutil
 import numpy as np
 import json
 import sys
+from omegaconf import OmegaConf
 
 try:
     import ruamel_yaml as yaml
@@ -84,3 +85,17 @@ def get_root_project():
 
 def append_lib(path):
     sys.path.append(os.path.join(path, "src"))
+
+
+def save_configs(log_dir, onboarding_config, matching_config, post_processing_config):
+    # save these configurations to the log_dir as text and format them
+    onboarding_config_path = f"{log_dir}/onboarding_config.yaml"
+    matching_config_path = f"{log_dir}/matching_config.yaml"
+    post_processing_config_path = f"{log_dir}/post_processing_config.yaml"
+
+    with open(onboarding_config_path, "w") as f:
+        f.write(OmegaConf.to_yaml(onboarding_config))
+    with open(matching_config_path, "w") as f:
+        f.write(OmegaConf.to_yaml(matching_config))
+    with open(post_processing_config_path, "w") as f:
+        f.write(OmegaConf.to_yaml(post_processing_config))

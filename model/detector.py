@@ -8,7 +8,7 @@ import os
 import os.path as osp
 from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
-from utils.inout import save_json, load_json, save_json_bop23
+from utils.inout import save_json, load_json, save_json_bop23, save_configs
 from model.utils import BatchedData, Detections, convert_npz_to_json
 from hydra.utils import instantiate
 import time
@@ -62,8 +62,6 @@ class Instance_Segmentation_Model(pl.LightningModule):
             ]
         )
         logging.info(f"Init CNOS done!")
-        
-        
 
     def set_reference_objects(self):
         os.makedirs(
@@ -467,14 +465,14 @@ class Instance_Segmentation_Model(pl.LightningModule):
         )
 
         # save detections to file
-        coco_result = detections.save_to_coco_format(
+        coco_result = detections.convert_to_coco_format(
             scene_id=int(scene_id),
             frame_id=int(frame_id),
             runtime=runtime,
             dataset_name=self.dataset_name,
         )
-        
-        self.final_results.append(coco_result)
+        for res in coco_result:
+            self.final_results.append(res)
 
         # results = detections.save_to_file(
         #     scene_id=int(scene_id),
@@ -527,6 +525,175 @@ class Instance_Segmentation_Model(pl.LightningModule):
         #     for detection in tqdm(detections, desc="Loading results ..."):
         #         formatted_detections.extend(detection)
 
-            detections_path = f"{self.log_dir}/{self.name_prediction_file}.json"
-            save_json_bop23(detections_path, self.final_results)
-            logging.info(f"Saved predictions to {detections_path}")
+        detections_path = f"{self.log_dir}/{self.name_prediction_file}.json"
+        save_json_bop23(detections_path, self.final_results)
+
+        logging.info(f"Saved predictions to {detections_path}")
+
+
+class prompted_segmentation(Instance_Segmentation_Model):
+    def __init__(
+        self,
+        segmentor_model,
+        descriptor_model,
+        onboarding_config,
+        matching_config,
+        post_processing_config,
+        log_interval,
+        log_dir,
+        visible_thred,
+        pointcloud_sample_num,
+        **kwargs,
+    ):
+        super().__init__(
+            segmentor_model,
+            descriptor_model,
+            onboarding_config,
+            matching_config,
+            post_processing_config,
+            log_interval,
+            log_dir,
+            visible_thred,
+            pointcloud_sample_num,
+            **kwargs,
+        )
+
+    def test_step(self, batch, idx):
+
+        if idx == 0:
+            os.makedirs(
+                osp.join(
+                    self.log_dir,
+                    f"predictions/{self.dataset_name}/{self.name_prediction_file}",
+                ),
+                exist_ok=True,
+            )
+            self.set_reference_objects()
+            self.set_reference_object_pointcloud()
+            self.move_to_device()
+        assert batch["image"].shape[0] == 1, "Batch size must be 1"
+        
+        proposal_stage_start_time = time.time()
+        grid_prompt_locations = self.segmentor_model.generate_grid_points(
+            point_size=(32, 32),
+            target_size=batch["image"][0].shape[-2:],
+            device=self.device,
+        )
+        foreground_prompt_locations = grid_prompt_locations.view(-1, 2)
+        
+        test_image_sized, point_prompt_scaled, _, _ = (
+            self.segmentor_model.scale_image_prompt_to_dim(
+                image=self.inv_rgb_transform(batch["image"][0]).unsqueeze(0),
+                point_prompt=foreground_prompt_locations,
+                # max_size=detector.input_size,
+            )
+        )
+        
+        _ = self.segmentor_model.encode_image(
+            test_image_sized,
+            original_image_size=batch["image"][0].shape[-2:],
+        )
+        seg_masks, seg_scores = self.segmentor_model.segment_by_prompt(
+            prompt=point_prompt_scaled,
+            batch_size=64,
+            score_threshould=0.88,
+            stability_thresh=0.85,
+        )
+        seg_masks = seg_masks > 0
+        
+        seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
+        keep_idxs = self.segmentor_model.batched_nms(
+            boxes=seg_boxes.float(),
+            scores=seg_scores,
+            idxs=torch.zeros(len(seg_masks)).to(self.device),  # categories
+            iou_threshold=0.7,
+        )
+        seg_masks = seg_masks[keep_idxs]
+        seg_scores = seg_scores[keep_idxs]
+        seg_boxes = seg_boxes[keep_idxs]
+
+        # init detections with masks and boxes
+        detections = Detections({"masks": seg_masks.float(), "boxes": seg_boxes})
+        detections.add_attribute("seg_scores", seg_scores)
+        detections.remove_very_small_detections(
+            config=self.post_processing_config.mask_post_processing
+        )
+
+        # compute semantic descriptors and appearance descriptors for query proposals
+        image_np = (
+            self.inv_rgb_transform(batch["image"][0]).cpu().numpy().transpose(1, 2, 0)
+        )
+        image_np = np.uint8(image_np.clip(0, 1) * 255)
+        query_decriptors, query_appe_descriptors = self.descriptor_model(
+            image_np, detections
+        )
+        proposal_stage_end_time = time.time()
+
+        # matching descriptors
+        matching_stage_start_time = time.time()
+        (
+            idx_selected_proposals,
+            pred_idx_objects,
+            semantic_score,
+            best_template,
+        ) = self.compute_semantic_score(query_decriptors)
+
+        # update detections
+        detections.filter(idx_selected_proposals)
+        query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
+
+        # compute the appearance score
+        appe_scores, ref_aux_descriptor = self.compute_appearance_score(
+            best_template, pred_idx_objects, query_appe_descriptors
+        )
+
+        # compute the geometric score
+        image_uv = self.project_template_to_image(
+            best_template, pred_idx_objects, batch, detections.masks
+        )
+
+        geometric_score, visible_ratio = self.compute_geometric_score(
+            image_uv,
+            detections,
+            query_appe_descriptors,
+            ref_aux_descriptor,
+            visible_thred=self.visible_thred,
+        )
+
+        # final score
+        final_score = (
+            semantic_score + appe_scores + geometric_score * visible_ratio
+        ) / (1 + 1 + visible_ratio)
+
+        detections.add_attribute("scores", final_score)
+        detections.add_attribute("object_ids", pred_idx_objects)
+        detections.apply_nms_per_object_id(
+            nms_thresh=self.post_processing_config.nms_thresh
+        )
+        matching_stage_end_time = time.time()
+
+        runtime = (
+            proposal_stage_end_time
+            - proposal_stage_start_time
+            + matching_stage_end_time
+            - matching_stage_start_time
+        )
+        detections.to_numpy()
+
+        scene_id = batch["scene_id"][0]
+        frame_id = batch["frame_id"][0]
+        file_path = osp.join(
+            self.log_dir,
+            f"predictions/{self.dataset_name}/{self.name_prediction_file}/scene{scene_id}_frame{frame_id}",
+        )
+
+        # save detections to file
+        coco_result = detections.convert_to_coco_format(
+            scene_id=int(scene_id),
+            frame_id=int(frame_id),
+            runtime=runtime,
+            dataset_name=self.dataset_name,
+        )
+        for res in coco_result:
+            self.final_results.append(res)
+        return 0

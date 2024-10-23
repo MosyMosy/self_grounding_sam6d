@@ -1,0 +1,3 @@
+_target_: model.segmentation.sam.SAM_Seg
+model_type: "vit_h"
+checkpoint_dir: "./checkpoints/segment-anything/"
