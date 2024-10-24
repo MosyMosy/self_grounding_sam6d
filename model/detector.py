@@ -61,6 +61,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
                 ),
             ]
         )
+
         logging.info(f"Init CNOS done!")
 
     def set_reference_objects(self):
@@ -459,12 +460,8 @@ class Instance_Segmentation_Model(pl.LightningModule):
 
         scene_id = batch["scene_id"][0]
         frame_id = batch["frame_id"][0]
-        file_path = osp.join(
-            self.log_dir,
-            f"predictions/{self.dataset_name}/{self.name_prediction_file}/scene{scene_id}_frame{frame_id}",
-        )
 
-        # save detections to file
+        # convert detections to coco format
         coco_result = detections.convert_to_coco_format(
             scene_id=int(scene_id),
             frame_id=int(frame_id),
@@ -474,57 +471,9 @@ class Instance_Segmentation_Model(pl.LightningModule):
         for res in coco_result:
             self.final_results.append(res)
 
-        # results = detections.save_to_file(
-        #     scene_id=int(scene_id),
-        #     frame_id=int(frame_id),
-        #     runtime=runtime,
-        #     file_path=file_path,
-        #     dataset_name=self.dataset_name,
-        #     return_results=True,
-        # )
-        # # save runtime to file
-        # np.savez(
-        #     file_path + "_runtime",
-        #     proposal_stage=proposal_stage_end_time - proposal_stage_start_time,
-        #     matching_stage=matching_stage_end_time - matching_stage_start_time,
-        # )
         return 0
 
     def test_epoch_end(self, outputs):
-        # if self.global_rank == 0:  # only rank 0 process
-        #     # can use self.all_gather to gather results from all processes
-        #     # but it is simpler just load the results from files so no file is missing
-        #     result_paths = sorted(
-        #         glob.glob(
-        #             osp.join(
-        #                 self.log_dir,
-        #                 f"predictions/{self.dataset_name}/{self.name_prediction_file}/*.npz",
-        #             )
-        #         )
-        #     )
-        #     result_paths = sorted(
-        #         [path for path in result_paths if "runtime" not in path]
-        #     )
-        #     num_workers = 10
-        #     logging.info(f"Converting npz to json requires {num_workers} workers ...")
-        #     pool = multiprocessing.Pool(processes=num_workers)
-        #     convert_npz_to_json_with_idx = partial(
-        #         convert_npz_to_json,
-        #         list_npz_paths=result_paths,
-        #     )
-        #     detections = list(
-        #         tqdm(
-        #             pool.imap_unordered(
-        #                 convert_npz_to_json_with_idx, range(len(result_paths))
-        #             ),
-        #             total=len(result_paths),
-        #             desc="Converting npz to json",
-        #         )
-        #     )
-        #     formatted_detections = []
-        #     for detection in tqdm(detections, desc="Loading results ..."):
-        #         formatted_detections.extend(detection)
-
         detections_path = f"{self.log_dir}/{self.name_prediction_file}.json"
         save_json_bop23(detections_path, self.final_results)
 
@@ -559,7 +508,6 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
     def test_step(self, batch, idx):
-
         if idx == 0:
             os.makedirs(
                 osp.join(
@@ -572,15 +520,30 @@ class prompted_segmentation(Instance_Segmentation_Model):
             self.set_reference_object_pointcloud()
             self.move_to_device()
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
-        
+
         proposal_stage_start_time = time.time()
-        grid_prompt_locations = self.segmentor_model.generate_grid_points(
-            point_size=(32, 32),
-            target_size=batch["image"][0].shape[-2:],
-            device=self.device,
+
+        foreground_prompt_locations, foreground_prompt_map = (
+            self.generate_foreground_prompt(batch, threshold=0.3)
         )
-        foreground_prompt_locations = grid_prompt_locations.view(-1, 2)
-        
+        if len(foreground_prompt_locations) == 0:
+            return 0
+
+        """import torch.nn.functional as F
+        from torchvision import utils as vutils
+
+        foreground_prompt_map = foreground_prompt_map.permute(
+            2, 0, 1
+        ).float()
+        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(540, 720), mode='nearest')
+        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
+
+        vutils.save_image(
+            result, f"positives.png"
+        )
+        foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)"""
+
         test_image_sized, point_prompt_scaled, _, _ = (
             self.segmentor_model.scale_image_prompt_to_dim(
                 image=self.inv_rgb_transform(batch["image"][0]).unsqueeze(0),
@@ -588,7 +551,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 # max_size=detector.input_size,
             )
         )
-        
+
         _ = self.segmentor_model.encode_image(
             test_image_sized,
             original_image_size=batch["image"][0].shape[-2:],
@@ -600,7 +563,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             stability_thresh=0.85,
         )
         seg_masks = seg_masks > 0
-        
+
         seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
         keep_idxs = self.segmentor_model.batched_nms(
             boxes=seg_boxes.float(),
@@ -620,13 +583,10 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         # compute semantic descriptors and appearance descriptors for query proposals
-        image_np = (
-            self.inv_rgb_transform(batch["image"][0]).cpu().numpy().transpose(1, 2, 0)
-        )
-        image_np = np.uint8(image_np.clip(0, 1) * 255)
         query_decriptors, query_appe_descriptors = self.descriptor_model(
-            image_np, detections
+            batch["image"][0], detections
         )
+
         proposal_stage_end_time = time.time()
 
         # matching descriptors
@@ -682,12 +642,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
 
         scene_id = batch["scene_id"][0]
         frame_id = batch["frame_id"][0]
-        file_path = osp.join(
-            self.log_dir,
-            f"predictions/{self.dataset_name}/{self.name_prediction_file}/scene{scene_id}_frame{frame_id}",
-        )
 
-        # save detections to file
+        # convert detections to coco format
         coco_result = detections.convert_to_coco_format(
             scene_id=int(scene_id),
             frame_id=int(frame_id),
@@ -697,3 +653,32 @@ class prompted_segmentation(Instance_Segmentation_Model):
         for res in coco_result:
             self.final_results.append(res)
         return 0
+
+    def generate_foreground_prompt(self, batch, threshold=0.4):
+        test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
+
+        obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
+        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
+        obj_templates_feats = self.ref_data["appe_descriptors"].sum(dim=(1, 2))
+        obj_templates_feats /= obj_templates_feats_mask[:, None]
+
+        test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
+        obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+        scene_obj_sim = test_image_desc @ obj_templates_feats.t()
+
+        grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
+            self.descriptor_model.output_spatial_size,
+            self.descriptor_model.patch_size,
+            device=self.device,
+            corners=False,
+        )
+        foreground_prompt_map, foreground_prompt_locations = (
+            self.segmentor_model.sim_2_point_prompts(
+                scene_obj_sim=scene_obj_sim,
+                grid_prompt_locations=grid_prompt_locations,
+                spatial_size=self.descriptor_model.output_spatial_size,
+                threshold=threshold,
+            )
+        )
+
+        return foreground_prompt_locations, foreground_prompt_map

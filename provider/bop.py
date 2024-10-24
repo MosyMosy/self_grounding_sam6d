@@ -16,7 +16,7 @@ from provider.base_bop import BaseBOP
 import imageio.v2 as imageio
 from utils.inout import load_json
 
-pl.seed_everything(2023)
+pl.seed_everything(2025)
 
 
 class BOPTemplate(Dataset):

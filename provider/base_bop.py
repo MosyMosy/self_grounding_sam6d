@@ -15,7 +15,7 @@ import torch
 from utils.bbox_utils import CropResizePad
 import pytorch_lightning as pl
 
-pl.seed_everything(2023)
+pl.seed_everything(2025)
 
 OBJ_IDS = {
     "icbin": [1, 2],

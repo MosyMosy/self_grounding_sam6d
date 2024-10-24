@@ -2,8 +2,15 @@ from torch.utils.data import DataLoader, TensorDataset
 from torchvision import transforms
 from torchvision.ops import nms
 import torch
-from model.segmentation.util import calculate_stability_score, get_bounding_boxes_batch as get_bounding_boxes_batch_
-from model.segmentation.prompt_helper import generate_grid_points as generate_grid_points_
+from model.segmentation.util import (
+    calculate_stability_score,
+    get_bounding_boxes_batch as get_bounding_boxes_batch_,
+)
+from model.segmentation.prompt_helper import (
+    generate_grid_points as generate_grid_points_,
+    sim_2_point_prompts as sim_2_point_prompts_,
+    generate_patch_grid_points as generate_patch_grid_points_,
+)
 from torchvision.ops import batched_nms as batched_nms_
 
 
@@ -277,9 +284,19 @@ class Base_Segmentation:
 
     def generate_grid_points(self, point_size, target_size, device, with_offset=True):
         return generate_grid_points_(point_size, target_size, device, with_offset)
-    
+
     def get_bounding_boxes_batch(self, masks):
         return get_bounding_boxes_batch_(masks)
 
     def batched_nms(self, boxes, scores, idxs, iou_threshold):
         return batched_nms_(boxes, scores, idxs, iou_threshold)
+
+    def sim_2_point_prompts(
+        self, scene_obj_sim, grid_prompt_locations, spatial_size, threshold=0.5
+    ):
+        return sim_2_point_prompts_(
+            scene_obj_sim, grid_prompt_locations, spatial_size, threshold=threshold
+        )
+
+    def generate_patch_grid_points(self, size, patch_size, device, corners=False):
+        return generate_patch_grid_points_(size, patch_size, device, corners=False)

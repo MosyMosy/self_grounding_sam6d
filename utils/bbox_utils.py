@@ -126,6 +126,103 @@ class CropResizePad:
         return torch.stack(processed_images)
 
 
+
+class CropResizePad_v2:
+    def __init__(self, target_size, square_bbox=False):
+        if isinstance(target_size, int):
+            target_size = (target_size, target_size)
+        self.target_size = target_size
+        self.target_ratio = self.target_size[1] / self.target_size[0]
+        self.target_h, self.target_w = target_size
+        self.target_max = max(self.target_h, self.target_w)
+        self.square_bbox = square_bbox
+
+    def __call__(self, images, boxes=None):
+        B, _, h, w = images.shape
+
+        if boxes is None:
+            # Create boxes that span the entire image
+            boxes = torch.tensor([[0, 0, w, h]] * B)
+
+        # Calculate box sizes and scale factors
+        box_sizes = boxes[:, 2:] - boxes[:, :2]
+        box_sizes_max = torch.max(box_sizes, dim=-1)[0]
+        scale_factors = self.target_max / box_sizes_max
+
+        if self.square_bbox:
+            # Make the bounding boxes square
+            boxes[:, 2] = boxes[:, 0] + box_sizes_max
+            boxes[:, 3] = boxes[:, 1] + box_sizes_max
+            
+            box_width = boxes[:, 2] - boxes[:, 0]
+            box_height = boxes[:, 3] - boxes[:, 1]
+            extra_width = box_width > w
+            extra_height = box_height > h
+            boxes[extra_width, 2] = w
+            boxes[extra_height, 3] = h
+
+        cropped_images = []
+        padding_info = []
+        for i in range(B):
+            image, box = images[i], boxes[i]
+            cropped_image = image[
+                :, int(box[1]) : int(box[3]), int(box[0]) : int(box[2])
+            ]
+            cropped_h, cropped_w = cropped_image.shape[-2:]
+            if cropped_h == 0 or cropped_w == 0:
+                cropped_images.append(
+                    torch.zeros(image.shape[0], self.target_h, self.target_w).to(
+                        image.device
+                    )
+                )
+                padding_info.append((0, 0, 1))
+                continue
+            scaled_image = F.interpolate(
+                cropped_image.unsqueeze(0), scale_factor=scale_factors[i].item()
+            )[0]
+
+            original_h, original_w = scaled_image.shape[1:]
+            padding_bottom = max(self.target_h - original_h, 0)
+            padding_right = max(self.target_w - original_w, 0)
+
+            padded_image = F.pad(scaled_image, (0, padding_right, 0, padding_bottom))
+
+            final_image = F.interpolate(
+                padded_image.unsqueeze(0), size=(self.target_h, self.target_w)
+            )[0]
+            cropped_images.append(final_image)
+
+            padding_info.append((padding_bottom, padding_right, scale_factors[i]))
+
+        return torch.stack(cropped_images)
+
+    def reverse(self, images, original_sizes):
+        original_h, original_w = original_sizes
+        target_h, target_w = images.shape[-2:]
+
+        if images.shape[1] == 0:
+            return torch.zeros(images.shape[0], 1, original_h, original_w).to(
+                images.device
+            )
+
+        # Calculate padding info
+        padding_bottom = max(target_h - original_h, 0)
+        padding_right = max(target_w - original_w, 0)
+
+        # Reverse padding
+        unpadded_image = images[
+            :, :, : target_h - padding_bottom, : target_w - padding_right
+        ]
+
+        unscaled_image = F.interpolate(
+            unpadded_image,
+            size=(original_h, original_w),
+        )
+
+        return unscaled_image
+
+
+
 def xyxy_to_xywh(bbox):
     if len(bbox.shape) == 1:
         """Convert [x1, y1, x2, y2] box format to [x, y, w, h] format."""

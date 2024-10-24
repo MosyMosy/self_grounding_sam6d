@@ -257,3 +257,47 @@ class CustomDINOv2(pl.LightningModule):
 
         return cls_features, patch_features
         
+
+class CustomDINOv2_new(CustomDINOv2):
+    def __init__(
+        self,
+        model_name,
+        token_name,
+        image_size,
+        chunk_size,
+        descriptor_width_size,
+        checkpoint_dir,
+        patch_size=14,
+        validpatch_thresh=0.5,
+    ):
+        super().__init__(
+            model_name,
+            token_name,
+            image_size,
+            chunk_size,
+            descriptor_width_size,
+            checkpoint_dir,
+            patch_size,
+            validpatch_thresh,
+        )
+        self.full_size = (532, 714)
+        self.output_spatial_size=(38, 51)
+        
+    def process_rgb_proposals(self, image, masks, boxes):
+        """
+        2. Mask and crop each proposals
+        3. Resize each proposals to predefined longest image size
+        """
+        num_proposals = len(masks)
+        # rgb = self.rgb_normalize(image_np).to(masks.device).float()
+        rgbs = image.unsqueeze(0).repeat(num_proposals, 1, 1, 1)
+        masked_rgbs = rgbs * masks.unsqueeze(1)
+        processed_masked_rgbs = self.rgb_proposal_processor(
+            masked_rgbs, boxes
+        )  # [N, 3, target_size, target_size]
+        return processed_masked_rgbs
+    
+    def encode_full_size(self, image):
+        resized_image = F.interpolate(image, size=self.full_size, mode="bilinear", align_corners=False)
+        feature = self.model(resized_image, is_training=True)["x_norm_patchtokens"]
+        return feature

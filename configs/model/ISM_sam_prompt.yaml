@@ -8,7 +8,7 @@ pointcloud_sample_num: 2048
 
 defaults:
 - segmentor_model: sam_new
-- descriptor_model: dinov2
+- descriptor_model: dinov2_new
 
 post_processing_config:
   mask_post_processing:
