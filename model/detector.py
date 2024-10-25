@@ -273,7 +273,10 @@ class Instance_Segmentation_Model(pl.LightningModule):
         proposal: N_query x imageH x imageW
         depth: imageH x imageW
         """
-        (N_query, imageH, imageW) = proposal.squeeze_().shape
+        shape = proposal.squeeze_(1).shape
+        if len(shape) == 2:
+            proposal = proposal.unsqueeze(0)
+        (N_query, imageH, imageW) = proposal.shape
         masked_depth = proposal * (depth[None, ...].repeat(N_query, 1, 1))
         translate = depth_image_to_pointcloud_translate_torch(
             masked_depth, depth_scale, cam_intrinsic
@@ -544,6 +547,12 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
         foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)"""
 
+        foreground_prompt_locations[..., 0] = (
+            foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
+        )
+        foreground_prompt_locations[..., 1] = (
+            foreground_prompt_locations[..., 1] / self.descriptor_model.full_size[0]
+        )
         test_image_sized, point_prompt_scaled, _, _ = (
             self.segmentor_model.scale_image_prompt_to_dim(
                 image=self.inv_rgb_transform(batch["image"][0]).unsqueeze(0),
@@ -682,3 +691,262 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         return foreground_prompt_locations, foreground_prompt_map
+
+
+
+class prompted_sg_segmentation(Instance_Segmentation_Model):
+    def __init__(
+        self,
+        segmentor_model,
+        descriptor_model,
+        onboarding_config,
+        matching_config,
+        post_processing_config,
+        log_interval,
+        log_dir,
+        visible_thred,
+        pointcloud_sample_num,
+        **kwargs,
+    ):
+        super().__init__(
+            segmentor_model,
+            descriptor_model,
+            onboarding_config,
+            matching_config,
+            post_processing_config,
+            log_interval,
+            log_dir,
+            visible_thred,
+            pointcloud_sample_num,
+            **kwargs,
+        )
+
+    def test_step(self, batch, idx):
+        if idx == 0:
+            os.makedirs(
+                osp.join(
+                    self.log_dir,
+                    f"predictions/{self.dataset_name}/{self.name_prediction_file}",
+                ),
+                exist_ok=True,
+            )
+            self.set_reference_objects()
+            self.set_reference_object_pointcloud()
+            self.set_grounding_info()
+            self.move_to_device()
+        assert batch["image"].shape[0] == 1, "Batch size must be 1"
+
+        proposal_stage_start_time = time.time()
+
+        foreground_prompt_locations, foreground_prompt_map = (
+            self.generate_foreground_prompt(batch, threshold=0.3)
+        )
+        if len(foreground_prompt_locations) == 0:
+            return 0
+
+        """import torch.nn.functional as F
+        from torchvision import utils as vutils
+
+        foreground_prompt_map = foreground_prompt_map.permute(
+            2, 0, 1
+        ).float()
+        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(540, 720), mode='nearest')
+        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
+
+        vutils.save_image(
+            result, f"positives.png"
+        )
+        foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)"""
+
+        foreground_prompt_locations[..., 0] = (
+            foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
+        )
+        foreground_prompt_locations[..., 1] = (
+            foreground_prompt_locations[..., 1] / self.descriptor_model.full_size[0]
+        )
+        test_image_sized, point_prompt_scaled, _, _ = (
+            self.segmentor_model.scale_image_prompt_to_dim(
+                image=self.inv_rgb_transform(batch["image"][0]).unsqueeze(0),
+                point_prompt=foreground_prompt_locations,
+                # max_size=detector.input_size,
+            )
+        )
+
+        _ = self.segmentor_model.encode_image(
+            test_image_sized,
+            original_image_size=batch["image"][0].shape[-2:],
+        )
+        seg_masks, seg_scores = self.segmentor_model.segment_by_prompt(
+            prompt=point_prompt_scaled,
+            batch_size=64,
+            score_threshould=0.88,
+            stability_thresh=0.85,
+        )
+        seg_masks = seg_masks > 0
+
+        seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
+        keep_idxs = self.segmentor_model.batched_nms(
+            boxes=seg_boxes.float(),
+            scores=seg_scores,
+            idxs=torch.zeros(len(seg_masks)).to(self.device),  # categories
+            iou_threshold=0.7,
+        )
+        seg_masks = seg_masks[keep_idxs]
+        seg_scores = seg_scores[keep_idxs]
+        seg_boxes = seg_boxes[keep_idxs]
+
+        # init detections with masks and boxes
+        detections = Detections({"masks": seg_masks.float(), "boxes": seg_boxes})
+        detections.add_attribute("seg_scores", seg_scores)
+        detections.remove_very_small_detections(
+            config=self.post_processing_config.mask_post_processing
+        )
+
+        # compute semantic descriptors and appearance descriptors for query proposals
+        query_decriptors, query_appe_descriptors = self.descriptor_model(
+            batch["image"][0], detections
+        )
+
+        proposal_stage_end_time = time.time()
+
+        # matching descriptors
+        matching_stage_start_time = time.time()
+        (
+            idx_selected_proposals,
+            pred_idx_objects,
+            semantic_score,
+            best_template,
+        ) = self.compute_semantic_score(query_decriptors)
+
+        # update detections
+        detections.filter(idx_selected_proposals)
+        query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
+
+        # compute the appearance score
+        appe_scores, ref_aux_descriptor = self.compute_appearance_score(
+            best_template, pred_idx_objects, query_appe_descriptors
+        )
+
+        # compute the geometric score
+        image_uv = self.project_template_to_image(
+            best_template, pred_idx_objects, batch, detections.masks
+        )
+
+        geometric_score, visible_ratio = self.compute_geometric_score(
+            image_uv,
+            detections,
+            query_appe_descriptors,
+            ref_aux_descriptor,
+            visible_thred=self.visible_thred,
+        )
+
+        # final score
+        final_score = (
+            semantic_score + appe_scores + geometric_score * visible_ratio
+        ) / (1 + 1 + visible_ratio)
+
+        detections.add_attribute("scores", final_score)
+        detections.add_attribute("object_ids", pred_idx_objects)
+        detections.apply_nms_per_object_id(
+            nms_thresh=self.post_processing_config.nms_thresh
+        )
+        matching_stage_end_time = time.time()
+
+        runtime = (
+            proposal_stage_end_time
+            - proposal_stage_start_time
+            + matching_stage_end_time
+            - matching_stage_start_time
+        )
+        detections.to_numpy()
+
+        scene_id = batch["scene_id"][0]
+        frame_id = batch["frame_id"][0]
+
+        # convert detections to coco format
+        coco_result = detections.convert_to_coco_format(
+            scene_id=int(scene_id),
+            frame_id=int(frame_id),
+            runtime=runtime,
+            dataset_name=self.dataset_name,
+        )
+        for res in coco_result:
+            self.final_results.append(res)
+        return 0
+
+    def generate_foreground_prompt(self, batch, threshold=0.4):
+        test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
+
+        obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
+        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
+        obj_templates_feats = self.ref_data["appe_descriptors"].sum(dim=(1, 2))
+        obj_templates_feats /= obj_templates_feats_mask[:, None]
+
+        test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
+        obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+        scene_obj_sim = test_image_desc @ obj_templates_feats.t()
+
+        grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
+            self.descriptor_model.output_spatial_size,
+            self.descriptor_model.patch_size,
+            device=self.device,
+            corners=False,
+        )
+        foreground_prompt_map, foreground_prompt_locations = (
+            self.segmentor_model.sim_2_point_prompts(
+                scene_obj_sim=scene_obj_sim,
+                grid_prompt_locations=grid_prompt_locations,
+                spatial_size=self.descriptor_model.output_spatial_size,
+                threshold=threshold,
+            )
+        )
+
+        return foreground_prompt_locations, foreground_prompt_map
+
+    
+    def set_grounding_info(self):
+        os.makedirs(
+            osp.join(self.log_dir, f"predictions/{self.dataset_name}"), exist_ok=True
+        )
+        logging.info("Initializing reference objects ...")
+
+        start_time = time.time()
+        self.ref_data["grounding_info"] =BatchedData(None),
+        grounding_info_path = osp.join(
+            self.ref_dataset.template_dir, "grounding_info.pth"
+        )
+
+        # Loading appearance descriptors
+        if self.onboarding_config.rendering_type == "pbr":
+            grounding_info_path = grounding_info_path.replace(".pth", "_pbr.pth")
+        if (
+            os.path.exists(grounding_info_path)
+            and not self.onboarding_config.reset_descriptors
+        ):
+            self.ref_data["grounding_info"] = torch.load(grounding_info_path).to(
+                self.device
+            )
+        else:
+            for idx in tqdm(
+                range(len(self.ref_dataset)),
+                desc="Computing appearance descriptors ...",
+            ):
+                ref_imgs = self.ref_dataset[idx]["templates"].to(self.device)
+                ref_masks = self.ref_dataset[idx]["template_masks"].to(self.device)
+                ref_feats = self.descriptor_model.compute_masked_patch_query(
+                    ref_imgs, ref_masks
+                )
+                self.ref_data["grounding_info"].append(ref_feats)
+
+            self.ref_data["grounding_info"].stack()
+            self.ref_data["grounding_info"] = self.ref_data["grounding_info"].data
+
+            # save the precomputed features for future use
+            torch.save(self.ref_data["grounding_info"], grounding_info_path)
+
+        end_time = time.time()
+        logging.info(
+            f"Runtime: {end_time-start_time:.02f}s, Query shape: {self.ref_data['grounding_info'].shape}, \
+            Query descriptors shape: {self.ref_data['grounding_info'].shape}"
+        )

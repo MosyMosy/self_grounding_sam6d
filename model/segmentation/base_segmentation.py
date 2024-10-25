@@ -35,8 +35,8 @@ class Base_Segmentation:
         )
         if point_prompt is not None:
             # point_prompt = point_prompt * scale
-            point_prompt[..., 0] = point_prompt[..., 0] * (W_new / W_old)
-            point_prompt[..., 1] = point_prompt[..., 1] * (H_new / H_old)
+            point_prompt[..., 0] = point_prompt[..., 0] * W_new
+            point_prompt[..., 1] = point_prompt[..., 1] * H_new
             point_prompt.clamp_(0, self.input_size)
         if bbox_prompt is not None:
             bbox_prompt[..., 0] = bbox_prompt[..., 0] * (W_new / W_old)
