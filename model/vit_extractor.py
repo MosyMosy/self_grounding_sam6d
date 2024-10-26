@@ -163,10 +163,11 @@ class ViTExtractor:
         B, C, H, W = batch.shape
         self._feats = {"token": [], "atten": [], "key": [], "query": [], "value": []}
         self._register_hooks(layer_idx)
-        cls_token = self.model(batch, g_info=g_info)
+        features = self.model(batch, g_info=g_info, is_training=True)
         self._unregister_hooks()
         self.load_size = (H, W)
-        self._feats["cls_token"] = cls_token.unsqueeze(1)
+        self._feats["x_norm_patchtokens"] = features["x_norm_patchtokens"]
+        self._feats["x_norm_clstoken"] = features["x_norm_clstoken"]
         return self._feats
 
     def extract_descriptors(
@@ -177,14 +178,10 @@ class ViTExtractor:
         register_size=4,
     ) -> torch.Tensor:
         self._extract_features(batch, g_info, layer_idx)
-        # equalize the dimensions of the cls token and the rest of the tokens
-        self._feats["cls_token"] = [
-            self._feats["cls_token"] for item in self._feats["token"]
-        ]
-        
+
         self._feats["token"] = [
             item[0][:, 1 + register_size :, :] for item in self._feats["token"]
-        ] 
+        ]
         # self._feats["atten"] = self._feats["atten"][0][:, 1 + register_size :, :]
 
         self._feats["key"] = [
@@ -207,11 +204,17 @@ class ViTExtractor:
             for item in self._feats["value"]
         ]
 
-        self._feats["token"] = torch.stack(self._feats["token"], dim=0).permute(1, 0, 2, 3)
+        self._feats["token"] = torch.stack(self._feats["token"], dim=0).permute(
+            1, 0, 2, 3
+        )
         self._feats["key"] = torch.stack(self._feats["key"], dim=0).permute(1, 0, 2, 3)
-        self._feats["query"] = torch.stack(self._feats["query"], dim=0).permute(1, 0, 2, 3)
-        self._feats["value"] = torch.stack(self._feats["value"], dim=0).permute(1, 0, 2, 3)
-        self._feats["cls_token"] = torch.stack(self._feats["cls_token"], dim=0).permute(1, 0, 2, 3)
+        self._feats["query"] = torch.stack(self._feats["query"], dim=0).permute(
+            1, 0, 2, 3
+        )
+        self._feats["value"] = torch.stack(self._feats["value"], dim=0).permute(
+            1, 0, 2, 3
+        )
+
 
         return self._feats
 

@@ -15,4 +15,4 @@ hydra:
 
 save_dir: ./log/${name_exp}
 name_exp: initial
-dataset_name: tless
+dataset_name: icbin

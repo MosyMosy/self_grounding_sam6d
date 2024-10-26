@@ -171,3 +171,5 @@ offline_data/
 external_packages/*
 lightning_logs/
 log/
+
+*.png

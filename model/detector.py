@@ -527,7 +527,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         proposal_stage_start_time = time.time()
 
         foreground_prompt_locations, foreground_prompt_map = (
-            self.generate_foreground_prompt(batch, threshold=0.3)
+            self.generate_foreground_prompt(batch, threshold=0.5)
         )
         if len(foreground_prompt_locations) == 0:
             return 0
@@ -538,14 +538,15 @@ class prompted_segmentation(Instance_Segmentation_Model):
         foreground_prompt_map = foreground_prompt_map.permute(
             2, 0, 1
         ).float()
-        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(540, 720), mode='nearest')
+        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(480, 640), mode='nearest')
         foreground_prompt_map[foreground_prompt_map == 0] = 0.2
         result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
 
         vutils.save_image(
-            result, f"positives.png"
-        )
-        foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)"""
+            result, f"positives_token.png"
+        )"""
+
+        # foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)
 
         foreground_prompt_locations[..., 0] = (
             foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
@@ -571,6 +572,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
             score_threshould=0.88,
             stability_thresh=0.85,
         )
+        if len(seg_masks) == 0:
+            return 0
         seg_masks = seg_masks > 0
 
         seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
@@ -691,7 +694,6 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         return foreground_prompt_locations, foreground_prompt_map
-
 
 
 class prompted_sg_segmentation(Instance_Segmentation_Model):
@@ -738,26 +740,29 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
 
         proposal_stage_start_time = time.time()
 
+        grounding_info = self.ref_data["grounding_info"]
+        # average all the objects to form a foreground grounding info
+        grounding_info = grounding_info.mean(dim=0, keepdim=True).permute(1, 0, 2)
+
         foreground_prompt_locations, foreground_prompt_map = (
-            self.generate_foreground_prompt(batch, threshold=0.3)
+            self.generate_foreground_prompt(
+                batch, grounding_info=grounding_info, threshold=0.5
+            )
         )
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        """import torch.nn.functional as F
+        import torch.nn.functional as F
         from torchvision import utils as vutils
 
-        foreground_prompt_map = foreground_prompt_map.permute(
-            2, 0, 1
-        ).float()
-        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(540, 720), mode='nearest')
-        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
-
-        vutils.save_image(
-            result, f"positives.png"
+        foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
+        foreground_prompt_map = F.interpolate(
+            foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
         )
-        foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)"""
+        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
+
+        vutils.save_image(result, f"positives.png")
 
         foreground_prompt_locations[..., 0] = (
             foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
@@ -784,6 +789,9 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
             stability_thresh=0.85,
         )
         seg_masks = seg_masks > 0
+
+        if len(seg_masks) == 0:
+            return 0
 
         seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
         keep_idxs = self.segmentor_model.batched_nms(
@@ -875,16 +883,38 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
             self.final_results.append(res)
         return 0
 
-    def generate_foreground_prompt(self, batch, threshold=0.4):
-        test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
+    def generate_foreground_prompt(self, batch, grounding_info, threshold=0.4):
+        test_image_desc = self.descriptor_model.encode_full_size(
+            batch["image"], g_info=grounding_info
+        )[0]
 
         obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
         obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
-        obj_templates_feats = self.ref_data["appe_descriptors"].sum(dim=(1, 2))
+
+        obj_templates_feats = self.ref_data["appe_descriptors"]
+        num_heads = self.descriptor_model.model.num_heads
+        head_dim = obj_templates_feats.shape[-1] // num_heads
+        o, t, p, c = obj_templates_feats.shape
+        if grounding_info is not None:
+            obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads, head_dim)
+            obj_templates_feats /= (
+                torch.norm(obj_templates_feats, dim=-1, keepdim=True) + 1e-6
+            )
+        obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.sum(dim=(1, 2))
         obj_templates_feats /= obj_templates_feats_mask[:, None]
 
+        if grounding_info is not None:
+            test_image_desc = test_image_desc.view(-1, num_heads, head_dim)
+            obj_templates_feats = obj_templates_feats.view(-1, num_heads, head_dim)
+            test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
+            obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+
+        test_image_desc = test_image_desc.view(-1, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.view(-1, num_heads * head_dim)
         test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
         obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+
         scene_obj_sim = test_image_desc @ obj_templates_feats.t()
 
         grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
@@ -904,7 +934,6 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
 
         return foreground_prompt_locations, foreground_prompt_map
 
-    
     def set_grounding_info(self):
         os.makedirs(
             osp.join(self.log_dir, f"predictions/{self.dataset_name}"), exist_ok=True
@@ -912,7 +941,7 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
         logging.info("Initializing reference objects ...")
 
         start_time = time.time()
-        self.ref_data["grounding_info"] =BatchedData(None),
+        self.ref_data["grounding_info"] = BatchedData(None)
         grounding_info_path = osp.join(
             self.ref_dataset.template_dir, "grounding_info.pth"
         )
@@ -930,14 +959,15 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
         else:
             for idx in tqdm(
                 range(len(self.ref_dataset)),
-                desc="Computing appearance descriptors ...",
+                desc="Computing grounding info ...",
             ):
                 ref_imgs = self.ref_dataset[idx]["templates"].to(self.device)
                 ref_masks = self.ref_dataset[idx]["template_masks"].to(self.device)
-                ref_feats = self.descriptor_model.compute_masked_patch_query(
+                ref_query = self.descriptor_model.compute_masked_patch_average_query(
                     ref_imgs, ref_masks
                 )
-                self.ref_data["grounding_info"].append(ref_feats)
+                ref_query = ref_query.mean(dim=0)
+                self.ref_data["grounding_info"].append(ref_query)
 
             self.ref_data["grounding_info"].stack()
             self.ref_data["grounding_info"] = self.ref_data["grounding_info"].data

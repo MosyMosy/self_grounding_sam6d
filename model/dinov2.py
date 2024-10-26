@@ -36,6 +36,26 @@ descriptor_map = {
     "dinov2_vitg14": "vit_giant2",
 }
 
+depths = {
+    "dinov2_vits14": 12,
+    "dinov2_vitb14": 12,
+    "dinov2_vitl14": 24,
+    "dinov2_vitg14": 40,
+}
+
+model_builders = {
+    "dinov2_vits14": vit_small,
+    "dinov2_vitb14": vit_base,
+    "dinov2_vitl14": vit_large,
+    "dinov2_vitg14": vit_giant2,
+}
+checkpoint_dic = {
+    "dinov2_vits14": "dinov2_vits14_pretrain.pth",
+    "dinov2_vitb14": "dinov2_vitb14_pretrain.pth",
+    "dinov2_vitl14": "dinov2_vitl14_pretrain.pth",
+    "dinov2_vitg14": "dinov2_vitg14_pretrain.pth",
+}
+
 from enum import Enum
 from typing import Union
 
@@ -209,15 +229,6 @@ class CustomDINOv2(pl.LightningModule):
         return processed_masks
 
     @torch.no_grad()
-    def forward_patch_tokens(self, image_np, proposals):
-        # with preprocess
-        processed_rgbs = self.process_rgb_proposals(
-            image_np, proposals.masks, proposals.boxes
-        )
-        processed_masks = self.process_masks_proposals(proposals.masks, proposals.boxes)
-        return self.forward_by_chunk_v2(processed_rgbs, processed_masks)
-
-    @torch.no_grad()
     def forward_by_chunk_v2(self, processed_rgbs, masks):
         batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
         batch_masks = BatchedData(batch_size=self.chunk_size, data=masks)
@@ -281,77 +292,7 @@ class CustomDINOv2(pl.LightningModule):
         return cls_features, patch_features
 
 
-class CustomDINOv2_new(CustomDINOv2):
-    def __init__(
-        self,
-        model_name,
-        token_name,
-        image_size,
-        chunk_size,
-        descriptor_width_size,
-        checkpoint_dir,
-        patch_size=14,
-        validpatch_thresh=0.5,
-    ):
-        super().__init__(
-            model_name,
-            token_name,
-            image_size,
-            chunk_size,
-            descriptor_width_size,
-            checkpoint_dir,
-            patch_size,
-            validpatch_thresh,
-        )
-        self.full_size = (532, 714)
-        self.output_spatial_size = (38, 51)
-
-    def process_rgb_proposals(self, image, masks, boxes):
-        """
-        2. Mask and crop each proposals
-        3. Resize each proposals to predefined longest image size
-        """
-        num_proposals = len(masks)
-        # rgb = self.rgb_normalize(image_np).to(masks.device).float()
-        rgbs = image.unsqueeze(0).repeat(num_proposals, 1, 1, 1)
-        masked_rgbs = rgbs * masks.unsqueeze(1)
-        processed_masked_rgbs = self.rgb_proposal_processor(
-            masked_rgbs, boxes
-        )  # [N, 3, target_size, target_size]
-        return processed_masked_rgbs
-
-    def encode_full_size(self, image):
-        resized_image = F.interpolate(
-            image, size=self.full_size, mode="bilinear", align_corners=False
-        )
-        feature = self.model(resized_image, is_training=True)["x_norm_patchtokens"]
-        return feature
-
-
-# ------------------------------------------------------------------------------------------------------------
-
-
-class CustomDINOv2_SG(CustomDINOv2_new):
-    model_builders = {
-        "dinov2_vits14": vit_small,
-        "dinov2_vitb14": vit_base,
-        "dinov2_vitl14": vit_large,
-        "dinov2_vitg14": vit_giant2,
-    }
-    checkpoint_dic = {
-        "dinov2_vits14": "dinov2_vits14_reg4_pretrain.pth",
-        "dinov2_vitb14": "dinov2_vitb14_reg4_pretrain.pth",
-        "dinov2_vitl14": "dinov2_vitl14_pretrain.pth",  # "dinov2_vitl14_reg4_pretrain.pth",
-        "dinov2_vitg14": "dinov2_vitg14_reg4_pretrain.pth",
-    }
-
-    depths = {
-        "dinov2_vits14": 12,
-        "dinov2_vitb14": 12,
-        "dinov2_vitl14": 24,
-        "dinov2_vitg14": 40,
-    }
-
+class CustomDINOv2_prompt(CustomDINOv2):
     def __init__(
         self,
         model_name,
@@ -376,15 +317,15 @@ class CustomDINOv2_SG(CustomDINOv2_new):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self.model = CustomDINOv2_SG.model_builders[model_name](
-                num_register_tokens=0,  # 4,
+            self.model = model_builders[model_name](
+                num_register_tokens=0,
                 patch_size=patch_size,
                 img_size=526,
                 init_values=1.0,
                 block_chunks=0,
             )
             model_dict = torch.load(
-                checkpoint_dir + CustomDINOv2_SG.checkpoint_dic[model_name],
+                checkpoint_dir + checkpoint_dic[model_name],
                 map_location="cpu",
                 weights_only=False,
             )
@@ -392,9 +333,105 @@ class CustomDINOv2_SG(CustomDINOv2_new):
             self.model.eval()
             self.model.to(self.device)
 
+        self.full_size = (532, 714)
+        self.output_spatial_size = (38, 51)
         self.extractor = ViTExtractor(self.model, stride=(patch_size, patch_size))
-        self.depth = CustomDINOv2_SG.depths[model_name]
+        self.depth = depths[model_name]
 
+    @torch.no_grad()
+    def compute_masked_patch_feature(self, images, masks):
+        # without preprocess
+        if images.shape[0] > self.chunk_size:
+            features = self.forward_by_chunk_v2(images, masks)
+        else:
+            # features = self.model(images, is_training=True)["x_norm_patchtokens"]
+            features = self.get_last_token(images)
+            features_mask = (
+                self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
+            )
+            features_mask = features_mask.unsqueeze(-1).repeat(1, 1, features.shape[-1])
+            features = F.normalize(features * features_mask, dim=-1)
+        return features
+
+    def process_rgb_proposals(self, image, masks, boxes):
+        """
+        2. Mask and crop each proposals
+        3. Resize each proposals to predefined longest image size
+        """
+        num_proposals = len(masks)
+        # rgb = self.rgb_normalize(image_np).to(masks.device).float()
+        rgbs = image.unsqueeze(0).repeat(num_proposals, 1, 1, 1)
+        masked_rgbs = rgbs * masks.unsqueeze(1)
+        processed_masked_rgbs = self.rgb_proposal_processor(
+            masked_rgbs, boxes
+        )  # [N, 3, target_size, target_size]
+        return processed_masked_rgbs
+
+    @torch.no_grad()
+    def encode_full_size(self, image):
+        resized_image = F.interpolate(
+            image, size=self.full_size, mode="bilinear", align_corners=False
+        )
+        # feature = self.model(resized_image, is_training=True)["x_norm_patchtokens"]
+        feature = self.get_last_token(resized_image)
+        return feature
+
+    @torch.no_grad()
+    def get_last_token(self, image: torch.Tensor, with_output=False):
+        layers = [self.depth - 1]
+        features = self.extractor.extract_descriptors(
+            image, layer_idx=layers, register_size=self.model.num_register_tokens
+        )
+        token = features["token"][:, 0]
+        
+        if with_output:
+            return token, features["x_norm_clstoken"], features["x_norm_patchtokens"]
+
+        return token
+
+    @torch.no_grad()
+    def compute_cls_and_patch_features(self, images, masks):
+        # features = self.model(images, is_training=True)
+        # patch_features = features["x_norm_patchtokens"]
+        # cls_features = features["x_norm_clstoken"]
+        token, cls_features, patch_features = self.get_last_token(images, with_output=True)
+        patch_features = token
+        features_mask = self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
+        features_mask = features_mask.unsqueeze(-1).repeat(
+            1, 1, patch_features.shape[-1]
+        )
+        patch_features = F.normalize(patch_features * features_mask, dim=-1)
+
+        return cls_features, patch_features
+
+
+# ------------------------------------------------------------------------------------------------------------
+
+
+class CustomDINOv2_SG(CustomDINOv2_prompt):
+    def __init__(
+        self,
+        model_name,
+        token_name,
+        image_size,
+        chunk_size,
+        descriptor_width_size,
+        checkpoint_dir,
+        patch_size=14,
+        validpatch_thresh=0.5,
+    ):
+        super().__init__(
+            model_name,
+            token_name,
+            image_size,
+            chunk_size,
+            descriptor_width_size,
+            checkpoint_dir,
+            patch_size,
+            validpatch_thresh,
+        )
+
+    @torch.no_grad()
     def get_layers_query(self, image: torch.Tensor):
         layers = [i for i in range(self.depth)]
         features = self.extractor.extract_descriptors(
@@ -405,7 +442,7 @@ class CustomDINOv2_SG(CustomDINOv2_new):
         query = features["query"]
 
         return query
-    
+
     @torch.no_grad()
     def forward_by_chunk_query(self, processed_rgbs, masks):
         batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
@@ -414,14 +451,14 @@ class CustomDINOv2_SG(CustomDINOv2_new):
         del masks
         query = BatchedData(batch_size=self.chunk_size)
         for idx_batch in range(len(batch_rgbs)):
-            feats = self.compute_masked_patch_feature(
+            feats = self.compute_masked_patch_average_query(
                 batch_rgbs[idx_batch], batch_masks[idx_batch]
             )
             query.cat(feats)
         return query.data
-    
+
     @torch.no_grad()
-    def compute_masked_patch_query(self, images, masks):
+    def compute_masked_patch_average_query(self, images, masks):
         # without preprocess
         if images.shape[0] > self.chunk_size:
             query = self.forward_by_chunk_query(images, masks)
@@ -430,6 +467,25 @@ class CustomDINOv2_SG(CustomDINOv2_new):
             features_mask = (
                 self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
             )
-            features_mask = features_mask.unsqueeze(-1).repeat(1, 1, query.shape[-1])
+            features_mask = (
+                features_mask.unsqueeze(1)
+                .unsqueeze(-1)
+                .repeat(1, query.shape[1], 1, query.shape[-1])
+            )
             query = query * features_mask
+
+            # average on the spatial dimension
+            mask_sum = features_mask.sum(dim=-2)
+            mask_sum[mask_sum == 0] = 1e-6
+            query = query.sum(dim=-2) / mask_sum
         return query
+
+    @torch.no_grad()
+    def encode_full_size(self, image, g_info=None):
+        resized_image = F.interpolate(
+            image, size=self.full_size, mode="bilinear", align_corners=False
+        )
+        feature = self.model(resized_image, is_training=True, g_info=g_info)[
+            "x_norm_patchtokens"
+        ]
+        return feature
