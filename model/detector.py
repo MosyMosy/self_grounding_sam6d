@@ -495,6 +495,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         log_dir,
         visible_thred,
         pointcloud_sample_num,
+        sim_thresh,
         **kwargs,
     ):
         super().__init__(
@@ -509,16 +510,17 @@ class prompted_segmentation(Instance_Segmentation_Model):
             pointcloud_sample_num,
             **kwargs,
         )
+        self.sim_thresh = sim_thresh
 
     def test_step(self, batch, idx):
         if idx == 0:
-            os.makedirs(
-                osp.join(
-                    self.log_dir,
-                    f"predictions/{self.dataset_name}/{self.name_prediction_file}",
-                ),
-                exist_ok=True,
-            )
+            # os.makedirs(
+            #     osp.join(
+            #         self.log_dir,
+            #         f"predictions/{self.dataset_name}/{self.name_prediction_file}",
+            #     ),
+            #     exist_ok=True,
+            # )
             self.set_reference_objects()
             self.set_reference_object_pointcloud()
             self.move_to_device()
@@ -527,7 +529,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         proposal_stage_start_time = time.time()
 
         foreground_prompt_locations, foreground_prompt_map = (
-            self.generate_foreground_prompt(batch, threshold=0.5)
+            self.generate_foreground_prompt(batch, threshold=self.sim_thresh)
         )
         if len(foreground_prompt_locations) == 0:
             return 0
@@ -671,12 +673,26 @@ class prompted_segmentation(Instance_Segmentation_Model):
 
         obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
         obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
-        obj_templates_feats = self.ref_data["appe_descriptors"].sum(dim=(1, 2))
+
+        obj_templates_feats = self.ref_data["appe_descriptors"]
+        num_heads = self.descriptor_model.model.num_heads
+        head_dim = obj_templates_feats.shape[-1] // num_heads
+        o, t, p, c = obj_templates_feats.shape
+
+        obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.sum(dim=(1, 2))
         obj_templates_feats /= obj_templates_feats_mask[:, None]
 
+        test_image_desc = test_image_desc.view(-1, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.view(-1, num_heads * head_dim)
         test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
         obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+
         scene_obj_sim = test_image_desc @ obj_templates_feats.t()
+
+        scene_obj_sim = (scene_obj_sim - scene_obj_sim.min()) / (
+            scene_obj_sim.max() - scene_obj_sim.min()
+        )
 
         grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
             self.descriptor_model.output_spatial_size,
@@ -696,7 +712,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         return foreground_prompt_locations, foreground_prompt_map
 
 
-class prompted_sg_segmentation(Instance_Segmentation_Model):
+class prompted_sg_segmentation(prompted_segmentation):
     def __init__(
         self,
         segmentor_model,
@@ -708,6 +724,7 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
         log_dir,
         visible_thred,
         pointcloud_sample_num,
+        sim_thresh,
         **kwargs,
     ):
         super().__init__(
@@ -720,18 +737,19 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
             log_dir,
             visible_thred,
             pointcloud_sample_num,
+            sim_thresh=sim_thresh,
             **kwargs,
         )
 
     def test_step(self, batch, idx):
         if idx == 0:
-            os.makedirs(
-                osp.join(
-                    self.log_dir,
-                    f"predictions/{self.dataset_name}/{self.name_prediction_file}",
-                ),
-                exist_ok=True,
-            )
+            # os.makedirs(
+            #     osp.join(
+            #         self.log_dir,
+            #         f"predictions/{self.dataset_name}/{self.name_prediction_file}",
+            #     ),
+            #     exist_ok=True,
+            # )
             self.set_reference_objects()
             self.set_reference_object_pointcloud()
             self.set_grounding_info()
@@ -742,11 +760,11 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
 
         grounding_info = self.ref_data["grounding_info"]
         # average all the objects to form a foreground grounding info
-        grounding_info = grounding_info.mean(dim=0, keepdim=True).permute(1, 0, 2)
+        grounding_info = grounding_info.mean(dim=0)
 
         foreground_prompt_locations, foreground_prompt_map = (
             self.generate_foreground_prompt(
-                batch, grounding_info=grounding_info, threshold=0.5
+                batch, grounding_info=grounding_info, threshold=self.sim_thresh
             )
         )
         if len(foreground_prompt_locations) == 0:
@@ -813,7 +831,7 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
 
         # compute semantic descriptors and appearance descriptors for query proposals
         query_decriptors, query_appe_descriptors = self.descriptor_model(
-            batch["image"][0], detections
+            batch["image"][0], detections, g_info=grounding_info
         )
 
         proposal_stage_end_time = time.time()
@@ -917,6 +935,10 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
 
         scene_obj_sim = test_image_desc @ obj_templates_feats.t()
 
+        scene_obj_sim = (scene_obj_sim - scene_obj_sim.min()) / (
+            scene_obj_sim.max() - scene_obj_sim.min()
+        )
+
         grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
             self.descriptor_model.output_spatial_size,
             self.descriptor_model.patch_size,
@@ -963,7 +985,7 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
             ):
                 ref_imgs = self.ref_dataset[idx]["templates"].to(self.device)
                 ref_masks = self.ref_dataset[idx]["template_masks"].to(self.device)
-                ref_query = self.descriptor_model.compute_masked_patch_average_query(
+                ref_query = self.descriptor_model.compute_masked_patch_average_tokens(
                     ref_imgs, ref_masks
                 )
                 ref_query = ref_query.mean(dim=0)
@@ -980,3 +1002,40 @@ class prompted_sg_segmentation(Instance_Segmentation_Model):
             f"Runtime: {end_time-start_time:.02f}s, Query shape: {self.ref_data['grounding_info'].shape}, \
             Query descriptors shape: {self.ref_data['grounding_info'].shape}"
         )
+
+    def compute_appearance_score(
+        self, best_pose, pred_objects_idx, qurey_appe_descriptors
+    ):
+        """
+        Based on the best template, calculate appearance similarity indicated by appearance score
+        """
+        con_idx = torch.concatenate(
+            (pred_objects_idx[None, :], best_pose[None, :]), dim=0
+        )
+        ref_appe_descriptors = self.ref_data["appe_descriptors"][
+            con_idx[0, ...], con_idx[1, ...], ...
+        ]  # N_query x N_patch x N_feature
+
+        num_heads = self.descriptor_model.model.num_heads
+        head_dim = ref_appe_descriptors.shape[-1] // num_heads
+
+        qurey_appe_descriptors = qurey_appe_descriptors.view(-1, num_heads, head_dim)
+        ref_appe_descriptors = ref_appe_descriptors.view(-1, num_heads, head_dim)
+        qurey_appe_descriptors /= torch.norm(
+            qurey_appe_descriptors, dim=-1, keepdim=True
+        )
+        ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
+
+        qurey_appe_descriptors = qurey_appe_descriptors.view(-1, num_heads * head_dim)
+        ref_appe_descriptors = ref_appe_descriptors.view(-1, num_heads * head_dim)
+        qurey_appe_descriptors /= torch.norm(
+            qurey_appe_descriptors, dim=-1, keepdim=True
+        )
+        ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
+
+        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+        appe_scores = aux_metric.compute_straight(
+            qurey_appe_descriptors, ref_appe_descriptors
+        )
+
+        return appe_scores, ref_appe_descriptors

@@ -4,6 +4,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 from torch.utils.data import DataLoader
+import os.path as osp
+
 
 @hydra.main(
     version_base=None,
@@ -67,6 +69,14 @@ def run_inference(cfg: DictConfig):
     else:
         raise NotImplementedError
     model.ref_dataset = ref_dataset
+
+    config_save_dir = osp.join(cfg.model.log_dir, "config")
+    os.makedirs(
+        config_save_dir,
+        exist_ok=True,
+    )
+    OmegaConf.save(cfg, osp.join(config_save_dir, f"{cfg.dataset_name}.yaml"))
+
 
     segmentation_name = cfg.model.segmentor_model._target_.split(".")[-1]
     agg_function = cfg.model.matching_config.aggregation_function

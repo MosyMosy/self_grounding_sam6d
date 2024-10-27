@@ -74,8 +74,110 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, g_info[1:]
-    
-    
+
+
+# class MemEffAttention(Attention):
+#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
+#         if not XFORMERS_AVAILABLE:
+#             if attn_bias is not None:
+#                 raise AssertionError("xFormers is required for using nested tensors")
+#             return super().forward(x)
+
+#         B, N, C = x.shape
+#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+
+#         q, k, v = unbind(qkv, 2)
+
+#         if g_info is not None:
+#             g_info_layer = g_info[0]
+#             new_g_info = g_info[1:]
+
+#             g_info_layer = g_info_layer.reshape(
+#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
+#             )
+#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
+#             k_g = g_info_layer[1].unsqueeze(0).unsqueeze(0)
+
+#             # q_normalized = q / q.norm(dim=-1, keepdim=True)
+#             # q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
+            
+#             # k_normalized = k / k.norm(dim=-1, keepdim=True)
+#             # k_g_normalized = k_g / k_g.norm(dim=-1, keepdim=True)
+            
+#             q_sim = (q_g * q).sum(dim=-1)
+#             k_sim = (k_g * k).sum(dim=-1)
+
+#             # x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+#             head_dim = C // self.num_heads
+            
+           
+#             attn = q @ k.transpose(-2, -1)
+#             q_sim = q_sim.unsqueeze(-2).repeat(1, 1, attn.shape[-2], 1)
+#             k_sim = k_sim.unsqueeze(-1).repeat(1, 1, 1, attn.shape[-1])
+#             attn += (q_sim + k_sim)      
+            
+#             attn *= (head_dim**-0.5)
+
+#             attn = attn.softmax(dim=-1)
+#             attn = self.attn_drop(attn)
+
+#             x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+
+#         else:
+#             new_g_info = None
+#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+#         x = x.reshape([B, N, C])
+
+#         x = self.proj(x)
+#         x = self.proj_drop(x)
+
+#         return x, new_g_info
+
+
+# class MemEffAttention(Attention):
+#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
+#         if not XFORMERS_AVAILABLE:
+#             if attn_bias is not None:
+#                 raise AssertionError("xFormers is required for using nested tensors")
+#             return super().forward(x)
+
+#         B, N, C = x.shape
+#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+
+#         q, k, v = unbind(qkv, 2)
+
+#         if g_info is not None:
+#             g_info_layer = g_info[0]
+#             new_g_info = g_info[1:]
+
+#             g_info_layer = g_info_layer.reshape(
+#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
+#             )
+#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
+#             k_g = g_info_layer[1].unsqueeze(0).unsqueeze(0)
+#             num_registers = 0 #4
+#             num_reserved = 1 + num_registers
+
+#             q_cls_register = q[:, :num_reserved]
+#             k_cls_register = k[:, :num_reserved]
+
+#             q_g_repeated = q_g.repeat(B, N - num_reserved, 1, 1)
+#             q_g_repeated = torch.cat([q_cls_register, q_g_repeated], dim=1).to(k.dtype)
+
+#             k_g_repeated = k_g.repeat(B, N - num_reserved, 1, 1)
+#             k_g_repeated = torch.cat([k_cls_register, k_g_repeated], dim=1).to(k.dtype)
+
+#             x = memory_efficient_attention((q + q_g_repeated)/2, (k + k_g_repeated)/2, v, attn_bias=attn_bias)
+#         else:
+#             new_g_info = None
+#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
+#         x = x.reshape([B, N, C])
+
+#         x = self.proj(x)
+#         x = self.proj_drop(x)
+
+#         return x, new_g_info
+
 
 class MemEffAttention(Attention):
     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
@@ -89,6 +191,7 @@ class MemEffAttention(Attention):
 
         q, k, v = unbind(qkv, 2)
 
+
         if g_info is not None:
             g_info_layer = g_info[0]
             new_g_info = g_info[1:]
@@ -98,9 +201,12 @@ class MemEffAttention(Attention):
             )
             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
 
-            q_pure = q[:, 5:]
-            k_pure = k[:, 5:]
-            v_pure = v[:, 5:]
+            num_registers = 0 #4
+            num_reserved = 1 + num_registers
+
+            q_pure = q[:, num_reserved:]
+            k_pure = k[:, num_reserved:]
+            v_pure = v[:, num_reserved:]
 
             q_normalized = q_pure / q_pure.norm(dim=-1, keepdim=True)
             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
@@ -110,38 +216,39 @@ class MemEffAttention(Attention):
             q_sim_pos = q_sim > 0.9
             q_sim_neg = ~q_sim_pos
 
-            q_pos = q_pure[q_sim_pos.expand_as(q_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
-            q_neg = q_pure[q_sim_neg.expand_as(q_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
-            k_pos = k_pure[q_sim_pos.expand_as(k_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
-            k_neg = k_pure[q_sim_neg.expand_as(k_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
-            v_pos = v_pure[q_sim_pos.expand_as(v_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
-            v_neg = v_pure[q_sim_neg.expand_as(v_pure)].reshape(
-                B, -1, self.num_heads, C // self.num_heads
-            )
+            q_pos_mask = q_sim_pos.expand_as(q_pure)
+            q_neg_mask = q_sim_neg.expand_as(q_pure)
+            
+            def get_masked_tokens(pure, token_mask, num_reserved):
+                token_mask_flat = token_mask.permute(1, 0, 2, 3).reshape(N - num_reserved, -1)
+                pure_flat = pure.permute(1, 0, 2, 3).reshape(N - num_reserved, -1)
+                token = pure_flat * token_mask_flat
+                B_to_keep = token.any(dim=1)
+                token = token[B_to_keep]
+                token = token.reshape(-1, B, self.num_heads, C // self.num_heads).permute(1, 0, 2, 3)
+                return token, torch.nonzero(B_to_keep, as_tuple=True)[0]
+            
+            q_pos, q_pos_idxs = get_masked_tokens(q_pure, q_pos_mask, num_reserved)
+            q_neg, q_neg_idxs = get_masked_tokens(q_pure, q_neg_mask, num_reserved)
+            k_pos, _ = get_masked_tokens(k_pure, q_pos_mask, num_reserved)
+            k_neg, _ = get_masked_tokens(k_pure, q_neg_mask, num_reserved)
+            v_pos, _ = get_masked_tokens(v_pure, q_pos_mask, num_reserved)
+            v_neg, _ = get_masked_tokens(v_pure, q_neg_mask, num_reserved)
 
-            q_pos = torch.cat([q[:, :5], q_pos], dim=1)
-            q_neg = torch.cat([q[:, :5], q_neg], dim=1)
-            k_pos = torch.cat([k[:, :5], k_pos], dim=1)
-            k_neg = torch.cat([k[:, :5], k_neg], dim=1)
-            v_pos = torch.cat([v[:, :5], v_pos], dim=1)
-            v_neg = torch.cat([v[:, :5], v_neg], dim=1)
+            q_pos = torch.cat([q[:, :num_reserved], q_pos], dim=1)
+            q_neg = torch.cat([q[:, :num_reserved], q_neg], dim=1)
+            k_pos = torch.cat([k[:, :num_reserved], k_pos], dim=1)
+            k_neg = torch.cat([k[:, :num_reserved], k_neg], dim=1)
+            v_pos = torch.cat([v[:, :num_reserved], v_pos], dim=1)
+            v_neg = torch.cat([v[:, :num_reserved], v_neg], dim=1)
 
             x_pos = memory_efficient_attention(q_pos, k_pos, v_pos, attn_bias=attn_bias)
             x_neg = memory_efficient_attention(q_neg, k_neg, v_neg, attn_bias=attn_bias)
             x = torch.zeros_like(q)
-            x[:, 5:][q_sim_pos.expand_as(q_pure)] = x_pos[:, 5:].flatten()
-            x[:, 5:][q_sim_neg.expand_as(q_pure)] = x_neg[:, 5:].flatten()
-            x[:, :5] = (x_pos[:, :5] + x_neg[:, :5]) / 2
+            
+            x[:, q_pos_idxs + num_reserved] = x_pos[:, num_reserved:]
+            x[:, q_neg_idxs + num_reserved] = x_neg[:, num_reserved:]
+            x[:, :num_reserved] = (x_pos[:, :num_reserved] + x_neg[:, :num_reserved]) / 2
 
         else:
             new_g_info = None
@@ -152,338 +259,3 @@ class MemEffAttention(Attention):
         x = self.proj_drop(x)
 
         return x, new_g_info
-
-
-# class MemEffAttention(Attention):
-#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-#         if not XFORMERS_AVAILABLE:
-#             if attn_bias is not None:
-#                 raise AssertionError("xFormers is required for using nested tensors")
-#             return super().forward(x)
-
-#         B, N, C = x.shape
-#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-#         q, k, v = unbind(qkv, 2)
-
-#         if g_info is not None:
-#             g_info_layer = g_info[0]
-#             new_g_info = g_info[1:]
-
-#             g_info_layer = g_info_layer.reshape(
-#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
-#             )
-#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-#             k_g = g_info_layer[1].unsqueeze(0).unsqueeze(0)
-#             v_g = g_info_layer[2].unsqueeze(0).unsqueeze(0)
-
-#             q_normalized = q / q.norm(dim=-1, keepdim=True)
-#             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-#             k_normalized = k / k.norm(dim=-1, keepdim=True)
-#             k_g_normalized = k_g / k_g.norm(dim=-1, keepdim=True)
-#             v_normalized = v / v.norm(dim=-1, keepdim=True)
-#             v_g_normalized = v_g / v_g.norm(dim=-1, keepdim=True)
-
-#             q_sim = (q_g_normalized * q_normalized).sum(dim=-1)
-#             q_sim = q_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
-#             k_sim = (k_g_normalized * k_normalized).sum(dim=-1)
-#             k_sim = k_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
-#             v_sim = (v_g_normalized * v_normalized).sum(dim=-1)
-#             v_sim = v_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
-
-#             q_sim = (q_sim - q_sim.min()) / (q_sim.max() - q_sim.min())
-#             k_sim = (k_sim - k_sim.min()) / (k_sim.max() - k_sim.min())
-#             v_sim = (v_sim - v_sim.min()) / (v_sim.max() - v_sim.min())
-
-#             sim = (q_sim + k_sim + v_sim) / 3
-#             sim_pos = sim > 0.65
-#             sim_neg = ~sim_pos
-
-#             q_pos = q[sim_pos.expand_as(q)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             q_neg = q[sim_neg.expand_as(q)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             k_pos = k[sim_pos.expand_as(k)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             k_neg = k[sim_neg.expand_as(k)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             v_pos = v[sim_pos.expand_as(v)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             v_neg = v[sim_neg.expand_as(v)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-
-#             x_pos = memory_efficient_attention(q_pos, k_pos, v_pos, attn_bias=attn_bias)
-#             x_neg = memory_efficient_attention(q_neg, k_neg, v_neg, attn_bias=attn_bias)
-#             x = torch.zeros_like(q)
-#             x[sim_pos.expand_as(x)] = x_pos.flatten()
-#             x[sim_neg.expand_as(x)] = x_neg.flatten()
-
-#         else:
-#             new_g_info = None
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-#         x = x.reshape([B, N, C])
-
-#         x = self.proj(x)
-#         x = self.proj_drop(x)
-
-#         return x, new_g_info
-
-
-# class MemEffAttention(Attention):
-#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-#         if not XFORMERS_AVAILABLE:
-#             if attn_bias is not None:
-#                 raise AssertionError("xFormers is required for using nested tensors")
-#             return super().forward(x)
-
-#         B, N, C = x.shape
-#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-#         q, k, v = unbind(qkv, 2)
-
-#         if g_info is not None:
-#             g_info_layer = g_info[0]
-#             new_g_info = g_info[1:]
-
-#             g_info_layer = g_info_layer.reshape(
-#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
-#             )
-#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-#             q_normalized = q / q.norm(dim=-1, keepdim=True)
-#             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-#             q_sim = (q_g_normalized * q_normalized).sum(dim=-1)
-#             q_sim = q_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
-#             q_sim = (q_sim - q_sim.min()) / (q_sim.max() - q_sim.min())
-#             q_sim_pos = q_sim > 0.9
-#             k = k * q_sim_pos
-
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-
-#         else:
-#             new_g_info = None
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-#         x = x.reshape([B, N, C])
-
-#         x = self.proj(x)
-#         x = self.proj_drop(x)
-
-#         return x, new_g_info
-
-
-# class MemEffAttention(Attention):
-#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-#         if not XFORMERS_AVAILABLE:
-#             if attn_bias is not None:
-#                 raise AssertionError("xFormers is required for using nested tensors")
-#             return super().forward(x)
-
-#         B, N, C = x.shape
-#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-#         q, k, v = unbind(qkv, 2)
-
-#         if g_info is not None:
-#             g_info_layer = g_info[0]
-#             new_g_info = g_info[1:]
-
-#             g_info_layer = g_info_layer.reshape(
-#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
-#             )
-#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-#             q_normalized = q / q.norm(dim=-1, keepdim=True)
-#             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-#             q_sim = (q_g_normalized * q_normalized).sum(dim=-1)
-#             q_sim = q_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
-#             q_sim = (q_sim - q_sim.min()) / (q_sim.max() - q_sim.min())
-#             # q_sim = (q_sim - q_sim.mean(1).unsqueeze(1)) / (q_sim.std(1).unsqueeze(1) + 1e-6)
-#             q_sim_pos = q_sim > 0.9
-#             q_sim_neg = ~q_sim_pos
-
-
-#             q_pos = q[q_sim_pos.expand_as(q)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             q_neg = q[q_sim_neg.expand_as(q)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             k_pos = k[q_sim_pos.expand_as(k)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             k_neg = k[q_sim_neg.expand_as(k)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             v_pos = v[q_sim_pos.expand_as(v)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-#             v_neg = v[q_sim_neg.expand_as(v)].reshape(
-#                 B, -1, self.num_heads, C // self.num_heads
-#             )
-
-#             x_pos = memory_efficient_attention(q_pos, k_pos, v_pos, attn_bias=attn_bias)
-#             x_neg = memory_efficient_attention(q_neg, k_neg, v_neg, attn_bias=attn_bias)
-#             x = torch.zeros_like(q)
-#             x[q_sim_pos.expand_as(x)] = x_pos.flatten()
-#             x[q_sim_neg.expand_as(x)] = x_neg.flatten()
-
-#         else:
-#             new_g_info = None
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-#         x = x.reshape([B, N, C])
-
-#         x = self.proj(x)
-#         x = self.proj_drop(x)
-
-#         return x, new_g_info
-
-
-# class MemEffAttention(Attention):
-#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-#         if not XFORMERS_AVAILABLE:
-#             if attn_bias is not None:
-#                 raise AssertionError("xFormers is required for using nested tensors")
-#             return super().forward(x)
-
-#         B, N, C = x.shape
-#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-#         q, k, v = unbind(qkv, 2)
-
-#         if g_info is not None:
-#             g_info_layer = g_info[0]
-#             new_g_info = g_info[1:]
-
-#             g_info_layer = g_info_layer.reshape(
-#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
-#             )
-#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-#             k_g = g_info_layer[1].unsqueeze(0).unsqueeze(0)
-#             v_g = g_info_layer[2].unsqueeze(0).unsqueeze(0)
-#             t_g = g_info_layer[3].unsqueeze(0).unsqueeze(0)
-
-#             q_normalized = q / q.norm(dim=-1, keepdim=True)
-#             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-#             q_sim = (q_g_normalized * q_normalized).sum(dim=-1).unsqueeze(-1)
-
-#             k_normalized = k / k.norm(dim=-1, keepdim=True)
-#             k_g_normalized = k_g / k_g.norm(dim=-1, keepdim=True)
-#             k_sim = (k_g_normalized * k_normalized).sum(dim=-1).unsqueeze(-1)
-
-#             v_normalized = v / v.norm(dim=-1, keepdim=True)
-#             v_g_normalized = v_g / v_g.norm(dim=-1, keepdim=True)
-#             v_sim = (v_g_normalized * v_normalized).sum(dim=-1).unsqueeze(-1)
-
-#             q_sim_scale = (q_sim - q_sim.min()) / (q_sim.max() - q_sim.min())
-#             k_sim_scale = (k_sim - k_sim.min()) / (k_sim.max() - k_sim.min())
-#             v_sim_scale = (v_sim - v_sim.min()) / (v_sim.max() - v_sim.min())
-
-#             # v = v * (q_sim_scale + k_sim_scale)
-
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-
-#         else:
-#             new_g_info = None
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-#         x = x.reshape([B, N, C])
-
-#         x = self.proj(x)
-#         x = self.proj_drop(x)
-
-#         return x, new_g_info
-
-
-# class MemEffAttention(Attention):
-#     def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-#         if not XFORMERS_AVAILABLE:
-#             if attn_bias is not None:
-#                 raise AssertionError("xFormers is required for using nested tensors")
-#             return super().forward(x)
-
-#         B, N, C = x.shape
-#         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-#         q, k, v = unbind(qkv, 2)
-
-#         if g_info is not None:
-#             g_info_layer = g_info[0]
-#             new_g_info = g_info[1:]
-
-#             g_info_layer = g_info_layer.reshape(
-#                 g_info_layer.shape[0], self.num_heads, C // self.num_heads
-#             )
-#             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-#             k_g = g_info_layer[1].unsqueeze(0).unsqueeze(0)
-#             v_g = g_info_layer[2].unsqueeze(0).unsqueeze(0)
-#             t_g = g_info_layer[3].unsqueeze(0).unsqueeze(0)
-
-#             q_normalized = q / q.norm(dim=-1, keepdim=True)
-#             q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-#             q_sim = (q_g_normalized * q_normalized).sum(dim=-1).unsqueeze(-1)
-#             q_sim[:,:5] = 0
-
-#             k_normalized = k / k.norm(dim=-1, keepdim=True)
-#             k_g_normalized = k_g / k_g.norm(dim=-1, keepdim=True)
-#             k_sim = (k_g_normalized * k_normalized).sum(dim=-1).unsqueeze(-1)
-#             k_sim[:,:5] = 0
-
-
-#             q_augmented = q + (k * k_sim)
-#             k_augmented = k + (q * q_sim)
-#             v_augmented = v - ( v_g * (q_sim + k_sim))
-
-#             x = memory_efficient_attention(q, k, v_augmented, attn_bias=attn_bias)
-#         else:
-#             new_g_info = None
-#             x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-#         x = x.reshape([B, N, C])
-
-#         x = self.proj(x)
-#         x = self.proj_drop(x)
-
-#         return x, new_g_info
-
-
-"""
-class MemEffAttention(Attention):
-    def forward(self, x: Tensor, g_info: Tensor = None, attn_bias=None) -> Tensor:
-        if not XFORMERS_AVAILABLE:
-            if attn_bias is not None:
-                raise AssertionError("xFormers is required for using nested tensors")
-            return super().forward(x)
-
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-        q, k, v = unbind(qkv, 2)
-
-        if g_info is not None:
-            g_info_layer = g_info[0]
-            new_g_info = g_info[1:]
-
-            g_info_layer = g_info_layer.reshape(
-                g_info_layer.shape[0], self.num_heads, C // self.num_heads
-            )
-            q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
-
-            q_normalized = q / q.norm(dim=-1, keepdim=True)
-            q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-            q_sim = (q_g_normalized * q_normalized).sum(dim=-1)
-            q_weighted = q * q_sim.unsqueeze(-1)
-            # q_weighted[:, :5] = 1
-            k_augmented = k + q_weighted
-
-            x = memory_efficient_attention(q, k_augmented, v, attn_bias=attn_bias)
-        else:
-            new_g_info = None
-            x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-        x = x.reshape([B, N, C])
-
-        x = self.proj(x)
-        x = self.proj_drop(x)
-
-        return x, new_g_info"""

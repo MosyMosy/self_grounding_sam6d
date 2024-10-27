@@ -292,7 +292,7 @@ class CustomDINOv2(pl.LightningModule):
         return cls_features, patch_features
 
 
-class CustomDINOv2_prompt(CustomDINOv2):
+class CustomDINOv2_Self_Grounding(CustomDINOv2):
     def __init__(
         self,
         model_name,
@@ -339,13 +339,13 @@ class CustomDINOv2_prompt(CustomDINOv2):
         self.depth = depths[model_name]
 
     @torch.no_grad()
-    def compute_masked_patch_feature(self, images, masks):
+    def compute_masked_patch_feature(self, images, masks, g_info = None):
         # without preprocess
         if images.shape[0] > self.chunk_size:
-            features = self.forward_by_chunk_v2(images, masks)
+            features = self.forward_by_chunk_v2(images, masks, g_info=g_info)
         else:
             # features = self.model(images, is_training=True)["x_norm_patchtokens"]
-            features = self.get_last_token(images)
+            features = self.get_last_token(images, g_info=g_info)
             features_mask = (
                 self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
             )
@@ -368,19 +368,19 @@ class CustomDINOv2_prompt(CustomDINOv2):
         return processed_masked_rgbs
 
     @torch.no_grad()
-    def encode_full_size(self, image):
+    def encode_full_size(self, image, g_info = None):
         resized_image = F.interpolate(
             image, size=self.full_size, mode="bilinear", align_corners=False
         )
         # feature = self.model(resized_image, is_training=True)["x_norm_patchtokens"]
-        feature = self.get_last_token(resized_image)
+        feature = self.get_last_token(resized_image, g_info=g_info)
         return feature
 
     @torch.no_grad()
-    def get_last_token(self, image: torch.Tensor, with_output=False):
+    def get_last_token(self, image: torch.Tensor, with_output=False, g_info = None):
         layers = [self.depth - 1]
         features = self.extractor.extract_descriptors(
-            image, layer_idx=layers, register_size=self.model.num_register_tokens
+            image, layer_idx=layers, register_size=self.model.num_register_tokens, g_info=g_info
         )
         token = features["token"][:, 0]
         
@@ -390,11 +390,11 @@ class CustomDINOv2_prompt(CustomDINOv2):
         return token
 
     @torch.no_grad()
-    def compute_cls_and_patch_features(self, images, masks):
+    def compute_cls_and_patch_features(self, images, masks, g_info = None):
         # features = self.model(images, is_training=True)
         # patch_features = features["x_norm_patchtokens"]
         # cls_features = features["x_norm_clstoken"]
-        token, cls_features, patch_features = self.get_last_token(images, with_output=True)
+        token, cls_features, patch_features = self.get_last_token(images, with_output=True, g_info=g_info)
         patch_features = token
         features_mask = self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
         features_mask = features_mask.unsqueeze(-1).repeat(
@@ -404,88 +404,87 @@ class CustomDINOv2_prompt(CustomDINOv2):
 
         return cls_features, patch_features
 
-
-# ------------------------------------------------------------------------------------------------------------
-
-
-class CustomDINOv2_SG(CustomDINOv2_prompt):
-    def __init__(
-        self,
-        model_name,
-        token_name,
-        image_size,
-        chunk_size,
-        descriptor_width_size,
-        checkpoint_dir,
-        patch_size=14,
-        validpatch_thresh=0.5,
-    ):
-        super().__init__(
-            model_name,
-            token_name,
-            image_size,
-            chunk_size,
-            descriptor_width_size,
-            checkpoint_dir,
-            patch_size,
-            validpatch_thresh,
-        )
-
     @torch.no_grad()
-    def get_layers_query(self, image: torch.Tensor):
+    def forward(self, image_np, proposals, g_info = None):
+        # with preprocess
+        processed_rgbs = self.process_rgb_proposals(
+            image_np, proposals.masks, proposals.boxes
+        )
+        processed_masks = self.process_masks_proposals(proposals.masks, proposals.boxes)
+
+        batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
+        batch_masks = BatchedData(batch_size=self.chunk_size, data=processed_masks)
+        del processed_rgbs  # free memory
+        del processed_masks
+        cls_features = BatchedData(batch_size=self.chunk_size)
+        patch_features = BatchedData(batch_size=self.chunk_size)
+        for idx_batch in range(len(batch_rgbs)):
+            cls_feats, patch_feats = self.compute_cls_and_patch_features(
+                batch_rgbs[idx_batch], batch_masks[idx_batch], g_info=g_info
+            )
+            cls_features.cat(cls_feats)
+            patch_features.cat(patch_feats)
+
+        return cls_features.data, patch_features.data
+
+    
+    @torch.no_grad()
+    def get_layers_tokens(self, image: torch.Tensor):
         layers = [i for i in range(self.depth)]
         features = self.extractor.extract_descriptors(
             image,
             layer_idx=layers,
             register_size=self.model.num_register_tokens,
         )
-        query = features["query"]
-
-        return query
+        
+        tokens = torch.stack(
+            [
+                features["query"],
+                features["key"],
+                features["value"],
+                features["token"],
+            ],
+            dim=2,
+        )
+        
+        return tokens
 
     @torch.no_grad()
-    def forward_by_chunk_query(self, processed_rgbs, masks):
+    def forward_by_chunk_tokens(self, processed_rgbs, masks):
         batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
         batch_masks = BatchedData(batch_size=self.chunk_size, data=masks)
         del processed_rgbs  # free memory
         del masks
-        query = BatchedData(batch_size=self.chunk_size)
+        tokens = BatchedData(batch_size=self.chunk_size)
         for idx_batch in range(len(batch_rgbs)):
-            feats = self.compute_masked_patch_average_query(
+            feats = self.compute_masked_patch_average_tokens(
                 batch_rgbs[idx_batch], batch_masks[idx_batch]
             )
-            query.cat(feats)
-        return query.data
+            tokens.cat(feats)
+        return tokens.data
 
     @torch.no_grad()
-    def compute_masked_patch_average_query(self, images, masks):
+    def compute_masked_patch_average_tokens(self, images, masks):
         # without preprocess
         if images.shape[0] > self.chunk_size:
-            query = self.forward_by_chunk_query(images, masks)
+            tokens = self.forward_by_chunk_tokens(images, masks)
         else:
-            query = self.get_layers_query(images)
+            tokens = self.get_layers_tokens(images)
             features_mask = (
                 self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
             )
             features_mask = (
-                features_mask.unsqueeze(1)
+                features_mask.unsqueeze(1).unsqueeze(1)
                 .unsqueeze(-1)
-                .repeat(1, query.shape[1], 1, query.shape[-1])
+                .repeat(1, tokens.shape[1],tokens.shape[2], 1, tokens.shape[-1])
             )
-            query = query * features_mask
+            tokens = tokens * features_mask
 
             # average on the spatial dimension
             mask_sum = features_mask.sum(dim=-2)
             mask_sum[mask_sum == 0] = 1e-6
-            query = query.sum(dim=-2) / mask_sum
-        return query
+            tokens = tokens.sum(dim=-2) / mask_sum
+        return tokens
 
-    @torch.no_grad()
-    def encode_full_size(self, image, g_info=None):
-        resized_image = F.interpolate(
-            image, size=self.full_size, mode="bilinear", align_corners=False
-        )
-        feature = self.model(resized_image, is_training=True, g_info=g_info)[
-            "x_norm_patchtokens"
-        ]
-        return feature
+    
+    

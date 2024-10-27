@@ -1,4 +1,4 @@
-_target_: model.dinov2.CustomDINOv2_prompt
+_target_: model.dinov2.CustomDINOv2_Self_Grounding
 model_name: dinov2_vitl14 #dinov2_vitl14
 # model: 
 #   _target_: torch.hub.load

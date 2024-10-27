@@ -3,7 +3,7 @@ defaults:
 - machine: local
 - callback: base
 - data: bop
-- model: ISM_sam_prompt_sg #ISM_sam # ISM_sam_prompt # #ISM_fastsam
+- model: ISM_sam_self_grounding # ISM_sam_prompt #ISM_sam # ISM_sam_self_grounding # #ISM_fastsam
 - _self_
 - override hydra/hydra_logging: disabled
 - override hydra/job_logging: disabled
