@@ -770,17 +770,17 @@ class prompted_sg_segmentation(prompted_segmentation):
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        import torch.nn.functional as F
-        from torchvision import utils as vutils
+        # import torch.nn.functional as F
+        # from torchvision import utils as vutils
 
-        foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
-        foreground_prompt_map = F.interpolate(
-            foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
-        )
-        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
+        # foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
+        # foreground_prompt_map = F.interpolate(
+        #     foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
+        # )
+        # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        # result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
 
-        vutils.save_image(result, f"positives.png")
+        # vutils.save_image(result, f"positives.png")
 
         foreground_prompt_locations[..., 0] = (
             foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
@@ -1018,16 +1018,18 @@ class prompted_sg_segmentation(prompted_segmentation):
 
         num_heads = self.descriptor_model.model.num_heads
         head_dim = ref_appe_descriptors.shape[-1] // num_heads
+        
+        B, N, _ = qurey_appe_descriptors.shape
 
-        qurey_appe_descriptors = qurey_appe_descriptors.view(-1, num_heads, head_dim)
-        ref_appe_descriptors = ref_appe_descriptors.view(-1, num_heads, head_dim)
+        qurey_appe_descriptors = qurey_appe_descriptors.view(B * N, num_heads, head_dim)
+        ref_appe_descriptors = ref_appe_descriptors.view(B * N, num_heads, head_dim)
         qurey_appe_descriptors /= torch.norm(
             qurey_appe_descriptors, dim=-1, keepdim=True
         )
         ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
 
-        qurey_appe_descriptors = qurey_appe_descriptors.view(-1, num_heads * head_dim)
-        ref_appe_descriptors = ref_appe_descriptors.view(-1, num_heads * head_dim)
+        qurey_appe_descriptors = qurey_appe_descriptors.view(B, N, num_heads * head_dim)
+        ref_appe_descriptors = ref_appe_descriptors.view(B, N, num_heads * head_dim)
         qurey_appe_descriptors /= torch.norm(
             qurey_appe_descriptors, dim=-1, keepdim=True
         )
