@@ -673,15 +673,15 @@ class prompted_segmentation(Instance_Segmentation_Model):
         test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
 
         obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
-        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
+        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=1)
 
         obj_templates_feats = self.ref_data["last_token"]
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
-        o, t, p, c = obj_templates_feats.shape
+        o, p, c = obj_templates_feats.shape
 
-        obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.sum(dim=(1, 2))
+        obj_templates_feats = obj_templates_feats.view(o, p, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.sum(dim=1)
         obj_templates_feats /= obj_templates_feats_mask[:, None]
 
         test_image_desc = test_image_desc.view(-1, num_heads * head_dim)
@@ -952,19 +952,19 @@ class prompted_sg_segmentation(prompted_segmentation):
         )[0]
 
         obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
-        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
+        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=1)
 
         obj_templates_feats = self.ref_data["last_token"]
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
         o, t, p, c = obj_templates_feats.shape
         if grounding_info is not None:
-            obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads, head_dim)
+            obj_templates_feats = obj_templates_feats.view(o, p, num_heads, head_dim)
             obj_templates_feats /= (
                 torch.norm(obj_templates_feats, dim=-1, keepdim=True) + 1e-6
             )
-        obj_templates_feats = obj_templates_feats.view(o, t, p, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.sum(dim=(1, 2))
+        obj_templates_feats = obj_templates_feats.view(o, p, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.sum(dim=1)
         obj_templates_feats /= obj_templates_feats_mask[:, None]
 
         if grounding_info is not None:
