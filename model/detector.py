@@ -523,6 +523,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             # )
             self.set_reference_objects()
             self.set_reference_object_pointcloud()
+            self.set_last_token()
             self.move_to_device()
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
 
@@ -671,10 +672,10 @@ class prompted_segmentation(Instance_Segmentation_Model):
     def generate_foreground_prompt(self, batch, threshold=0.4):
         test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
 
-        obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
+        obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
         obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
 
-        obj_templates_feats = self.ref_data["appe_descriptors"]
+        obj_templates_feats = self.ref_data["last_token"]
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
         o, t, p, c = obj_templates_feats.shape
@@ -710,6 +711,49 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         return foreground_prompt_locations, foreground_prompt_map
+
+    def set_last_token(self):
+        os.makedirs(
+            osp.join(self.log_dir, f"predictions/{self.dataset_name}"), exist_ok=True
+        )
+        logging.info("Initializing reference objects ...")
+
+        start_time = time.time()
+        self.ref_data["last_token"] = BatchedData(None)
+        last_token_path = osp.join(self.ref_dataset.template_dir, "last_token.pth")
+
+        # Loading appearance descriptors
+        if self.onboarding_config.rendering_type == "pbr":
+            last_token_path = last_token_path.replace(".pth", "_pbr.pth")
+        if (
+            os.path.exists(last_token_path)
+            and not self.onboarding_config.reset_descriptors
+        ):
+            self.ref_data["last_token"] = torch.load(last_token_path).to(self.device)
+        else:
+            for idx in tqdm(
+                range(len(self.ref_dataset)),
+                desc="Computing last tokens info ...",
+            ):
+                ref_imgs = self.ref_dataset[idx]["templates"].to(self.device)
+                ref_masks = self.ref_dataset[idx]["template_masks"].to(self.device)
+                last_token = self.descriptor_model.compute_masked_patch_last_token(
+                    ref_imgs, ref_masks
+                )
+                last_token = last_token.mean(dim=0)
+                self.ref_data["last_token"].append(last_token)
+
+            self.ref_data["last_token"].stack()
+            self.ref_data["last_token"] = self.ref_data["last_token"].data
+
+            # save the precomputed features for future use
+            torch.save(self.ref_data["last_token"], last_token_path)
+
+        end_time = time.time()
+        logging.info(
+            f"Runtime: {end_time-start_time:.02f}s, Query shape: {self.ref_data['last_token'].shape}, \
+            Query descriptors shape: {self.ref_data['last_token'].shape}"
+        )
 
 
 class prompted_sg_segmentation(prompted_segmentation):
@@ -752,6 +796,7 @@ class prompted_sg_segmentation(prompted_segmentation):
             # )
             self.set_reference_objects()
             self.set_reference_object_pointcloud()
+            self.set_last_token()
             self.set_grounding_info()
             self.move_to_device()
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
@@ -770,17 +815,17 @@ class prompted_sg_segmentation(prompted_segmentation):
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        # import torch.nn.functional as F
-        # from torchvision import utils as vutils
+        import torch.nn.functional as F
+        from torchvision import utils as vutils
 
-        # foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
-        # foreground_prompt_map = F.interpolate(
-        #     foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
-        # )
-        # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        # result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
+        foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
+        foreground_prompt_map = F.interpolate(
+            foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
+        )
+        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
 
-        # vutils.save_image(result, f"positives.png")
+        vutils.save_image(result, f"positives.png")
 
         foreground_prompt_locations[..., 0] = (
             foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
@@ -831,7 +876,7 @@ class prompted_sg_segmentation(prompted_segmentation):
 
         # compute semantic descriptors and appearance descriptors for query proposals
         query_decriptors, query_appe_descriptors = self.descriptor_model(
-            batch["image"][0], detections, g_info=grounding_info
+            batch["image"][0], detections
         )
 
         proposal_stage_end_time = time.time()
@@ -906,10 +951,10 @@ class prompted_sg_segmentation(prompted_segmentation):
             batch["image"], g_info=grounding_info
         )[0]
 
-        obj_templates_feats_mask = self.ref_data["appe_descriptors"].sum(dim=-1)
+        obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
         obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=(1, 2))
 
-        obj_templates_feats = self.ref_data["appe_descriptors"]
+        obj_templates_feats = self.ref_data["last_token"]
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
         o, t, p, c = obj_templates_feats.shape
@@ -1003,41 +1048,41 @@ class prompted_sg_segmentation(prompted_segmentation):
             Query descriptors shape: {self.ref_data['grounding_info'].shape}"
         )
 
-    def compute_appearance_score(
-        self, best_pose, pred_objects_idx, qurey_appe_descriptors
-    ):
-        """
-        Based on the best template, calculate appearance similarity indicated by appearance score
-        """
-        con_idx = torch.concatenate(
-            (pred_objects_idx[None, :], best_pose[None, :]), dim=0
-        )
-        ref_appe_descriptors = self.ref_data["appe_descriptors"][
-            con_idx[0, ...], con_idx[1, ...], ...
-        ]  # N_query x N_patch x N_feature
+    # def compute_appearance_score(
+    #     self, best_pose, pred_objects_idx, qurey_appe_descriptors
+    # ):
+    #     """
+    #     Based on the best template, calculate appearance similarity indicated by appearance score
+    #     """
+    #     con_idx = torch.concatenate(
+    #         (pred_objects_idx[None, :], best_pose[None, :]), dim=0
+    #     )
+    #     ref_appe_descriptors = self.ref_data["appe_descriptors"][
+    #         con_idx[0, ...], con_idx[1, ...], ...
+    #     ]  # N_query x N_patch x N_feature
 
-        num_heads = self.descriptor_model.model.num_heads
-        head_dim = ref_appe_descriptors.shape[-1] // num_heads
-        
-        B, N, _ = qurey_appe_descriptors.shape
+    #     num_heads = self.descriptor_model.model.num_heads
+    #     head_dim = ref_appe_descriptors.shape[-1] // num_heads
 
-        qurey_appe_descriptors = qurey_appe_descriptors.view(B * N, num_heads, head_dim)
-        ref_appe_descriptors = ref_appe_descriptors.view(B * N, num_heads, head_dim)
-        qurey_appe_descriptors /= torch.norm(
-            qurey_appe_descriptors, dim=-1, keepdim=True
-        )
-        ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
+    #     B, N, _ = qurey_appe_descriptors.shape
 
-        qurey_appe_descriptors = qurey_appe_descriptors.view(B, N, num_heads * head_dim)
-        ref_appe_descriptors = ref_appe_descriptors.view(B, N, num_heads * head_dim)
-        qurey_appe_descriptors /= torch.norm(
-            qurey_appe_descriptors, dim=-1, keepdim=True
-        )
-        ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
+    #     qurey_appe_descriptors = qurey_appe_descriptors.view(B * N, num_heads, head_dim)
+    #     ref_appe_descriptors = ref_appe_descriptors.view(B * N, num_heads, head_dim)
+    #     qurey_appe_descriptors /= torch.norm(
+    #         qurey_appe_descriptors, dim=-1, keepdim=True
+    #     )
+    #     ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
 
-        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
-        appe_scores = aux_metric.compute_straight(
-            qurey_appe_descriptors, ref_appe_descriptors
-        )
+    #     qurey_appe_descriptors = qurey_appe_descriptors.view(B, N, num_heads * head_dim)
+    #     ref_appe_descriptors = ref_appe_descriptors.view(B, N, num_heads * head_dim)
+    #     qurey_appe_descriptors /= torch.norm(
+    #         qurey_appe_descriptors, dim=-1, keepdim=True
+    #     )
+    #     ref_appe_descriptors /= torch.norm(ref_appe_descriptors, dim=-1, keepdim=True)
 
-        return appe_scores, ref_appe_descriptors
+    #     aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+    #     appe_scores = aux_metric.compute_straight(
+    #         qurey_appe_descriptors, ref_appe_descriptors
+    #     )
+
+    #     return appe_scores, ref_appe_descriptors
