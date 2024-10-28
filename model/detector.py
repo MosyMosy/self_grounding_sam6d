@@ -815,17 +815,17 @@ class prompted_sg_segmentation(prompted_segmentation):
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        import torch.nn.functional as F
-        from torchvision import utils as vutils
+        # import torch.nn.functional as F
+        # from torchvision import utils as vutils
 
-        foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
-        foreground_prompt_map = F.interpolate(
-            foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
-        )
-        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
+        # foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
+        # foreground_prompt_map = F.interpolate(
+        #     foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
+        # )
+        # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        # result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
 
-        vutils.save_image(result, f"positives.png")
+        # vutils.save_image(result, f"positives.png")
 
         foreground_prompt_locations[..., 0] = (
             foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]

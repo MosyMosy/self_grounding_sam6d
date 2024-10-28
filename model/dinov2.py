@@ -352,13 +352,13 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
             features.cat(feats)
         return features.data
 
-    def compute_masked_patch_last_token(self, images, masks, g_info=None):
+    def compute_masked_patch_last_token(self, images, masks):
         # without preprocess
         if images.shape[0] > self.chunk_size:
-            features = self.forward_by_chunk_last_token(images, masks, g_info=g_info)
+            features = self.forward_by_chunk_last_token(images, masks)
         else:
             # features = self.model(images, is_training=True)["x_norm_patchtokens"]
-            features = self.get_last_token(images, g_info=g_info)
+            features = self.get_last_token(images)
             features_mask = (
                 self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
             )
