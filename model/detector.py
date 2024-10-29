@@ -496,6 +496,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
         visible_thred,
         pointcloud_sample_num,
         sim_thresh,
+        with_seg_score,
+        with_geo_score,
         **kwargs,
     ):
         super().__init__(
@@ -511,6 +513,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
             **kwargs,
         )
         self.sim_thresh = sim_thresh
+        self.with_seg_score = with_seg_score
+        self.with_geo_score = with_geo_score
 
     def test_step(self, batch, idx):
         if idx == 0:
@@ -636,9 +640,19 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         # final score
-        final_score = (
-            semantic_score + appe_scores + geometric_score * visible_ratio
-        ) / (1 + 1 + visible_ratio)
+        if ~self.with_geo_score:
+            visible_ratio = 0
+        if self.with_seg_score:
+            final_score = (
+                semantic_score
+                + appe_scores
+                + detections.seg_scores
+                + geometric_score * visible_ratio
+            ) / (3 + visible_ratio)
+        else:
+            final_score = (
+                semantic_score + appe_scores + geometric_score * visible_ratio
+            ) / (2 + visible_ratio)
 
         detections.add_attribute("scores", final_score)
         detections.add_attribute("object_ids", pred_idx_objects)
@@ -672,20 +686,10 @@ class prompted_segmentation(Instance_Segmentation_Model):
     def generate_foreground_prompt(self, batch, threshold=0.4):
         test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
 
-        obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
-        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=1)
-
         obj_templates_feats = self.ref_data["last_token"]
-        num_heads = self.descriptor_model.model.num_heads
-        head_dim = obj_templates_feats.shape[-1] // num_heads
-        o, p, c = obj_templates_feats.shape
 
-        obj_templates_feats = obj_templates_feats.view(o, p, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.sum(dim=1)
-        obj_templates_feats /= obj_templates_feats_mask[:, None]
+        obj_templates_feats = obj_templates_feats.mean(dim=0, keepdim=True)
 
-        test_image_desc = test_image_desc.view(-1, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.view(-1, num_heads * head_dim)
         test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
         obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
 
@@ -769,6 +773,8 @@ class prompted_sg_segmentation(prompted_segmentation):
         visible_thred,
         pointcloud_sample_num,
         sim_thresh,
+        with_seg_score,
+        with_geo_score,
         **kwargs,
     ):
         super().__init__(
@@ -782,6 +788,8 @@ class prompted_sg_segmentation(prompted_segmentation):
             visible_thred,
             pointcloud_sample_num,
             sim_thresh=sim_thresh,
+            with_seg_score=with_seg_score,
+            with_geo_score=with_geo_score,
             **kwargs,
         )
 
@@ -820,7 +828,7 @@ class prompted_sg_segmentation(prompted_segmentation):
 
         # foreground_prompt_map = foreground_prompt_map.permute(2, 0, 1).float()
         # foreground_prompt_map = F.interpolate(
-        #     foreground_prompt_map.unsqueeze(0), size=(480, 640), mode="nearest"
+        #     foreground_prompt_map.unsqueeze(0), size=(960, 1280), mode="nearest"
         # )
         # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
         # result = foreground_prompt_map * self.inv_rgb_transform(batch["image"])
@@ -913,9 +921,19 @@ class prompted_sg_segmentation(prompted_segmentation):
         )
 
         # final score
-        final_score = (
-            semantic_score + appe_scores + geometric_score * visible_ratio
-        ) / (1 + 1 + visible_ratio)
+        if ~self.with_geo_score:
+            visible_ratio = 0
+        if self.with_seg_score:
+            final_score = (
+                semantic_score
+                + appe_scores
+                + detections.seg_scores
+                + geometric_score * visible_ratio
+            ) / (3 + visible_ratio)
+        else:
+            final_score = (
+                semantic_score + appe_scores + geometric_score * visible_ratio
+            ) / (2 + visible_ratio)
 
         detections.add_attribute("scores", final_score)
         detections.add_attribute("object_ids", pred_idx_objects)
@@ -951,21 +969,17 @@ class prompted_sg_segmentation(prompted_segmentation):
             batch["image"], g_info=grounding_info
         )[0]
 
-        obj_templates_feats_mask = self.ref_data["last_token"].sum(dim=-1)
-        obj_templates_feats_mask = (obj_templates_feats_mask > 0).sum(dim=1)
-
         obj_templates_feats = self.ref_data["last_token"]
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
-        o, t, p, c = obj_templates_feats.shape
+        o, c = obj_templates_feats.shape
         if grounding_info is not None:
-            obj_templates_feats = obj_templates_feats.view(o, p, num_heads, head_dim)
+            obj_templates_feats = obj_templates_feats.view(o, num_heads, head_dim)
             obj_templates_feats /= (
                 torch.norm(obj_templates_feats, dim=-1, keepdim=True) + 1e-6
             )
-        obj_templates_feats = obj_templates_feats.view(o, p, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.sum(dim=1)
-        obj_templates_feats /= obj_templates_feats_mask[:, None]
+        obj_templates_feats = obj_templates_feats.view(o, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.mean(dim=0, keepdim=True)
 
         if grounding_info is not None:
             test_image_desc = test_image_desc.view(-1, num_heads, head_dim)

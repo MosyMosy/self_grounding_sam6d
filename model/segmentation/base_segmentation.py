@@ -116,7 +116,7 @@ class Base_Segmentation:
             seg_mask = seg_mask[stability_score >= stability_thresh]
             score = score[stability_score >= stability_thresh]
             stability_score = stability_score[stability_score >= stability_thresh]
-            # score = (score + stability_score) / 2
+            score = (score + stability_score) / 2
         return seg_mask, score
 
     def segment_by_prompt(

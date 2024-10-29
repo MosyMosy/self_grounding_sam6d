@@ -355,16 +355,25 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
     def compute_masked_patch_last_token(self, images, masks):
         # without preprocess
         if images.shape[0] > self.chunk_size:
-            features = self.forward_by_chunk_last_token(images, masks)
+            last_token = self.forward_by_chunk_last_token(images, masks)
         else:
             # features = self.model(images, is_training=True)["x_norm_patchtokens"]
-            features = self.get_last_token(images)
+            last_token = self.get_last_token(images)
             features_mask = (
                 self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
             )
-            features_mask = features_mask.unsqueeze(-1).repeat(1, 1, features.shape[-1])
-            features = F.normalize(features * features_mask, dim=-1)
-        return features
+            features_mask = features_mask.unsqueeze(-1).repeat(
+                1, 1, last_token.shape[-1]
+            )
+            last_token = last_token * features_mask
+            # average on the spatial dimension
+            mask_sum = features_mask.sum(dim=-2)
+            mask_sum[mask_sum == 0] = 1e-6
+            last_token = last_token.sum(dim=-2) / mask_sum
+            last_token = last_token[
+                mask_sum.any(dim=-1)
+            ]  # to exclude the tokens that their mask is all zero as we average them at the end this will not affect the result
+        return last_token
 
     def process_rgb_proposals(self, image, masks, boxes):
         """
@@ -397,6 +406,7 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
             layer_idx=layers,
             register_size=self.model.num_register_tokens,
             g_info=g_info,
+            just_token=True,
         )
         token = features["token"][:, 0]
 
@@ -500,4 +510,7 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
             mask_sum = features_mask.sum(dim=-2)
             mask_sum[mask_sum == 0] = 1e-6
             tokens = tokens.sum(dim=-2) / mask_sum
+            tokens = tokens[
+                mask_sum.flatten(1, 3).any(dim=(-1))
+            ]  # to exclude the tokens that their mask is all zero as we average them at the end this will not affect the result
         return tokens

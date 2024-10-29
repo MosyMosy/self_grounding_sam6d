@@ -176,12 +176,19 @@ class ViTExtractor:
         g_info: torch.Tensor = None,
         layer_idx: list = [23],
         register_size=4,
+        just_token=False,
     ) -> torch.Tensor:
         self._extract_features(batch, g_info, layer_idx)
 
         self._feats["token"] = [
             item[0][:, 1 + register_size :, :] for item in self._feats["token"]
         ]
+        if just_token:
+            self._feats["token"] = torch.stack(self._feats["token"], dim=0).permute(
+                1, 0, 2, 3
+            )
+            return self._feats
+
         # self._feats["atten"] = self._feats["atten"][0][:, 1 + register_size :, :]
 
         self._feats["key"] = [
@@ -214,7 +221,6 @@ class ViTExtractor:
         self._feats["value"] = torch.stack(self._feats["value"], dim=0).permute(
             1, 0, 2, 3
         )
-
 
         return self._feats
 

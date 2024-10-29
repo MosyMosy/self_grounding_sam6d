@@ -6,6 +6,8 @@ descriptor_width_size: 640
 visible_thred: 0.5
 pointcloud_sample_num: 2048
 sim_thresh: 0.6
+with_seg_score: True
+with_geo_score: True
 
 defaults:
 - segmentor_model: sam_new
