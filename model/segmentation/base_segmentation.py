@@ -116,8 +116,8 @@ class Base_Segmentation:
             seg_mask = seg_mask[stability_score >= stability_thresh]
             score = score[stability_score >= stability_thresh]
             stability_score = stability_score[stability_score >= stability_thresh]
-            score = (score + stability_score) / 2
-        return seg_mask, score
+            # score = (score + stability_score) / 2
+        return seg_mask, score, stability_score
 
     def segment_by_prompt(
         self,
@@ -137,22 +137,26 @@ class Base_Segmentation:
             )
             seg_masks = []
             seg_scores = []
+            stability_scores = []
             for prompt_batch in foreground_prompt_dl:
                 prompt_ = prompt_batch[0]
 
-                seg_mask, seg_score = self.segment_by_prompt_(
+                seg_mask, seg_score, stability_score = self.segment_by_prompt_(
                     prompt_, score_threshould, stability_thresh, prompt_mode=prompt_mode
                 )
 
                 seg_masks.append(seg_mask)
                 seg_scores.append(seg_score)
+                stability_scores.append(stability_score)
 
             seg_masks = torch.cat(seg_masks, dim=0)
             seg_scores = torch.cat(seg_scores, dim=0)
+            stability_scores = torch.cat(stability_scores, dim=0)
         else:
-            seg_masks, seg_scores = self.segment_by_prompt_(
+            seg_masks, seg_scores, stability_scores = self.segment_by_prompt_(
                 prompt, score_threshould, stability_thresh, prompt_mode=prompt_mode
             )
+        seg_scores = (seg_scores + stability_scores) / 2
 
         sorted_idx = torch.argsort(seg_scores, descending=True)
         seg_masks = seg_masks[sorted_idx]

@@ -3,7 +3,8 @@ defaults:
 - machine: local
 - callback: base
 - data: bop
-- model: ISM_sam_self_grounding #_new_geo # ISM_sam_prompt #ISM_sam # ISM_sam_self_grounding # #ISM_fastsam
+- model: ISM_sam_prompt #ISM_sam_prompt #ISM_sam  #ISM_fastsam
+
 - _self_
 - override hydra/hydra_logging: disabled
 - override hydra/job_logging: disabled
@@ -13,6 +14,7 @@ hydra:
   run:
     dir: .
 
+prompt_mode: self_grounding # "nomral" or "self_grounding"
 save_dir: ./log/${name_exp}
 name_exp: initial
 dataset_name: tless
