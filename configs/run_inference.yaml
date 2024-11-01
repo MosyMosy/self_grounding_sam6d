@@ -14,7 +14,7 @@ hydra:
   run:
     dir: .
 
-prompt_mode: self_grounding # "nomral" or "self_grounding"
+prompt_mode: normal # "nomral" or "self_grounding"
 save_dir: ./log/${name_exp}
 name_exp: initial
-dataset_name: tless
+dataset_name: itodd

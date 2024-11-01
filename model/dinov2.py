@@ -333,8 +333,8 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
             self.model.eval()
             self.model.to(self.device)
 
-        self.full_size = (532, 714)
-        self.output_spatial_size = (38, 51)
+        self.full_size = (224, 224)
+        self.output_spatial_size = (16, 16)
         self.extractor = ViTExtractor(self.model, stride=(patch_size, patch_size))
         self.depth = depths[model_name]
 

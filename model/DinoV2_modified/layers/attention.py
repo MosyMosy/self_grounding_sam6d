@@ -100,22 +100,22 @@ class Attention(nn.Module):
 
 #             # q_normalized = q / q.norm(dim=-1, keepdim=True)
 #             # q_g_normalized = q_g / q_g.norm(dim=-1, keepdim=True)
-            
+
 #             # k_normalized = k / k.norm(dim=-1, keepdim=True)
 #             # k_g_normalized = k_g / k_g.norm(dim=-1, keepdim=True)
-            
+
 #             q_sim = (q_g * q).sum(dim=-1)
 #             k_sim = (k_g * k).sum(dim=-1)
 
 #             # x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
 #             head_dim = C // self.num_heads
-            
-           
+
+
 #             attn = q @ k.transpose(-2, -1)
 #             q_sim = q_sim.unsqueeze(-2).repeat(1, 1, attn.shape[-2], 1)
 #             k_sim = k_sim.unsqueeze(-1).repeat(1, 1, 1, attn.shape[-1])
-#             attn += (q_sim + k_sim)      
-            
+#             attn += (q_sim + k_sim)
+
 #             attn *= (head_dim**-0.5)
 
 #             attn = attn.softmax(dim=-1)
@@ -191,7 +191,6 @@ class MemEffAttention(Attention):
 
         q, k, v = unbind(qkv, 2)
 
-
         if g_info is not None:
             g_info_layer = g_info[0]
             new_g_info = g_info[1:]
@@ -201,7 +200,7 @@ class MemEffAttention(Attention):
             )
             q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
 
-            num_registers = 0 #4
+            num_registers = 0  # 4
             num_reserved = 1 + num_registers
 
             q_pure = q[:, num_reserved:]
@@ -213,21 +212,25 @@ class MemEffAttention(Attention):
             q_sim = (q_g_normalized * q_normalized).sum(dim=-1)
             q_sim = q_sim.mean(dim=-1).unsqueeze(-1).unsqueeze(-1)
             q_sim = (q_sim - q_sim.min()) / (q_sim.max() - q_sim.min())
-            q_sim_pos = q_sim > 0.9
+            q_sim_pos = q_sim > 0.7  # we have ablated this from 0.6 to 0.9
             q_sim_neg = ~q_sim_pos
 
             q_pos_mask = q_sim_pos.expand_as(q_pure)
             q_neg_mask = q_sim_neg.expand_as(q_pure)
-            
+
             def get_masked_tokens(pure, token_mask, num_reserved):
-                token_mask_flat = token_mask.permute(1, 0, 2, 3).reshape(N - num_reserved, -1)
+                token_mask_flat = token_mask.permute(1, 0, 2, 3).reshape(
+                    N - num_reserved, -1
+                )
                 pure_flat = pure.permute(1, 0, 2, 3).reshape(N - num_reserved, -1)
                 token = pure_flat * token_mask_flat
                 B_to_keep = token.any(dim=1)
                 token = token[B_to_keep]
-                token = token.reshape(-1, B, self.num_heads, C // self.num_heads).permute(1, 0, 2, 3)
+                token = token.reshape(
+                    -1, B, self.num_heads, C // self.num_heads
+                ).permute(1, 0, 2, 3)
                 return token, torch.nonzero(B_to_keep, as_tuple=True)[0]
-            
+
             q_pos, q_pos_idxs = get_masked_tokens(q_pure, q_pos_mask, num_reserved)
             q_neg, q_neg_idxs = get_masked_tokens(q_pure, q_neg_mask, num_reserved)
             k_pos, _ = get_masked_tokens(k_pure, q_pos_mask, num_reserved)
@@ -245,10 +248,11 @@ class MemEffAttention(Attention):
             x_pos = memory_efficient_attention(q_pos, k_pos, v_pos, attn_bias=attn_bias)
             x_neg = memory_efficient_attention(q_neg, k_neg, v_neg, attn_bias=attn_bias)
             x = torch.zeros_like(q)
-            
+
             x[:, q_pos_idxs + num_reserved] = x_pos[:, num_reserved:]
             x[:, q_neg_idxs + num_reserved] = x_neg[:, num_reserved:]
-            x[:, :num_reserved] = (x_pos[:, :num_reserved] + x_neg[:, :num_reserved]) / 2
+            # x[:, :num_reserved] = (x_pos[:, :num_reserved] + x_neg[:, :num_reserved]) / 2
+            x[:, :num_reserved] = x_pos[:, :num_reserved]
 
         else:
             new_g_info = None
