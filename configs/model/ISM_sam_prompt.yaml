@@ -5,7 +5,7 @@ segmentor_width_size: 640 # make it stable
 descriptor_width_size: 640
 visible_thred: 0.5
 pointcloud_sample_num: 2048
-sim_thresh: 0.6
+sim_thresh: 0.4
 prompt_mode: ${prompt_mode} # "nomral" or "self_grounding"
 
 defaults:

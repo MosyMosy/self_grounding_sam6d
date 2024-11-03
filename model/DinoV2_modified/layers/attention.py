@@ -192,13 +192,13 @@ class MemEffAttention(Attention):
         q, k, v = unbind(qkv, 2)
 
         if g_info is not None:
-            g_info_layer = g_info[0]
-            new_g_info = g_info[1:]
+            g_info_layer = g_info[:,0]
+            new_g_info = g_info[:,1:]
 
             g_info_layer = g_info_layer.reshape(
-                g_info_layer.shape[0], self.num_heads, C // self.num_heads
+                *g_info_layer.shape[:-1], self.num_heads, C // self.num_heads
             )
-            q_g = g_info_layer[0].unsqueeze(0).unsqueeze(0)
+            q_g = g_info_layer[:,0].unsqueeze(1)
 
             num_registers = 0  # 4
             num_reserved = 1 + num_registers

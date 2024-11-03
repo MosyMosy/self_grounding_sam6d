@@ -367,12 +367,12 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
             )
             last_token = last_token * features_mask
             # average on the spatial dimension
-            mask_sum = features_mask.sum(dim=-2)
-            mask_sum[mask_sum == 0] = 1e-6
-            last_token = last_token.sum(dim=-2) / mask_sum
-            last_token = last_token[
-                mask_sum.any(dim=-1)
-            ]  # to exclude the tokens that their mask is all zero as we average them at the end this will not affect the result
+            # mask_sum = features_mask.sum(dim=-2)
+            # mask_sum[mask_sum == 0] = 1e-6
+            # last_token = last_token.sum(dim=-2) / mask_sum
+            # last_token = last_token[
+            #     mask_sum.any(dim=-1)
+            # ]  # to exclude the tokens that their mask is all zero as we average them at the end this will not affect the result
         return last_token
 
     def process_rgb_proposals(self, image, masks, boxes):
@@ -415,43 +415,47 @@ class CustomDINOv2_Self_Grounding(CustomDINOv2):
 
         return token
 
-    # @torch.no_grad()
-    # def compute_cls_and_patch_features(self, images, masks, g_info = None):
-    #     # features = self.model(images, is_training=True)
-    #     # patch_features = features["x_norm_patchtokens"]
-    #     # cls_features = features["x_norm_clstoken"]
-    #     token, cls_features, patch_features = self.get_last_token(images, with_output=True, g_info=g_info)
-    #     patch_features = token
-    #     features_mask = self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
-    #     features_mask = features_mask.unsqueeze(-1).repeat(
-    #         1, 1, patch_features.shape[-1]
-    #     )
-    #     patch_features = F.normalize(patch_features * features_mask, dim=-1)
+    @torch.no_grad()
+    def compute_cls_and_patch_features_with_sg(self, images, masks, g_info=None):
+        # features = self.model(images, is_training=True, g_info=g_info)
+        # cls_features = features["x_norm_clstoken"]
+        # patch_features = features["x_norm_patchtokens"]
 
-    #     return cls_features, patch_features
+        token, cls_features, patch_features = self.get_last_token(images, with_output=True, g_info=g_info)
+        patch_features = token
+        features_mask = self.patch_kernel(masks).flatten(-2) > self.validpatch_thresh
+        features_mask = features_mask.unsqueeze(-1).repeat(
+            1, 1, patch_features.shape[-1]
+        )
+        patch_features = F.normalize(patch_features * features_mask, dim=-1)
 
-    # @torch.no_grad()
-    # def forward(self, image_np, proposals, g_info = None):
-    #     # with preprocess
-    #     processed_rgbs = self.process_rgb_proposals(
-    #         image_np, proposals.masks, proposals.boxes
-    #     )
-    #     processed_masks = self.process_masks_proposals(proposals.masks, proposals.boxes)
+        return cls_features, patch_features
 
-    #     batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
-    #     batch_masks = BatchedData(batch_size=self.chunk_size, data=processed_masks)
-    #     del processed_rgbs  # free memory
-    #     del processed_masks
-    #     cls_features = BatchedData(batch_size=self.chunk_size)
-    #     patch_features = BatchedData(batch_size=self.chunk_size)
-    #     for idx_batch in range(len(batch_rgbs)):
-    #         cls_feats, patch_feats = self.compute_cls_and_patch_features(
-    #             batch_rgbs[idx_batch], batch_masks[idx_batch], g_info=g_info
-    #         )
-    #         cls_features.cat(cls_feats)
-    #         patch_features.cat(patch_feats)
+    @torch.no_grad()
+    def forward_with_sg(self, image_np, proposals, g_info=None):
+        # with preprocess
+        processed_rgbs = self.process_rgb_proposals(
+            image_np, proposals.masks, proposals.boxes
+        )
+        processed_masks = self.process_masks_proposals(proposals.masks, proposals.boxes)
 
-    #     return cls_features.data, patch_features.data
+        batch_rgbs = BatchedData(batch_size=self.chunk_size, data=processed_rgbs)
+        batch_masks = BatchedData(batch_size=self.chunk_size, data=processed_masks)
+        batch_g_info = BatchedData(batch_size=self.chunk_size, data=g_info)
+        del processed_rgbs  # free memory
+        del processed_masks
+        cls_features = BatchedData(batch_size=self.chunk_size)
+        patch_features = BatchedData(batch_size=self.chunk_size)
+        for idx_batch in range(len(batch_rgbs)):
+            cls_feats, patch_feats = self.compute_cls_and_patch_features_with_sg(
+                batch_rgbs[idx_batch],
+                batch_masks[idx_batch],
+                g_info=batch_g_info[idx_batch],
+            )
+            cls_features.cat(cls_feats)
+            patch_features.cat(patch_feats)
+
+        return cls_features.data, patch_features.data
 
     @torch.no_grad()
     def get_layers_tokens(self, image: torch.Tensor):

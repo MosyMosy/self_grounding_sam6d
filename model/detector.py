@@ -540,7 +540,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         elif self.prompt_mode == "self_grounding":
             grounding_info = self.ref_data["grounding_info"]
             # average all the objects to form a foreground grounding info
-            grounding_info = grounding_info.mean(dim=0)
+            grounding_info = grounding_info.mean(dim=0).unsqueeze(0)
             foreground_prompt_locations, foreground_prompt_map = (
                 self.generate_foreground_prompt_sg(
                     batch, grounding_info, threshold=self.sim_thresh
@@ -635,22 +635,47 @@ class prompted_segmentation(Instance_Segmentation_Model):
         query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
 
         # compute the appearance score
-        appe_scores, ref_aux_descriptor = self.compute_appearance_score(
-            best_template, pred_idx_objects, query_appe_descriptors
-        )
+        if self.prompt_mode == "normal":
+            appe_scores, ref_aux_descriptor = self.compute_appearance_score(
+                best_template, pred_idx_objects, query_appe_descriptors
+            )
 
-        # compute the geometric score
-        image_uv = self.project_template_to_image(
-            best_template, pred_idx_objects, batch, detections.masks
-        )
+            # compute the geometric score
+            image_uv = self.project_template_to_image(
+                best_template, pred_idx_objects, batch, detections.masks
+            )
 
-        geometric_score, visible_ratio = self.compute_geometric_score(
-            image_uv,
-            detections,
-            query_appe_descriptors,
-            ref_aux_descriptor,
-            visible_thred=self.visible_thred,
-        )
+            geometric_score, visible_ratio = self.compute_geometric_score(
+                image_uv,
+                detections,
+                query_appe_descriptors,
+                ref_aux_descriptor,
+                visible_thred=self.visible_thred,
+            )
+        elif self.prompt_mode == "self_grounding":
+            if len(detections.masks.shape) == 4:
+                detections.masks.squeeze_(1)
+            grounding_info = self.ref_data["grounding_info"][pred_idx_objects]
+            _, query_appe_descriptors = self.descriptor_model.forward_with_sg(
+                batch["image"][0], detections, g_info=grounding_info
+            )
+            query_appe_descriptors = F.normalize(query_appe_descriptors, dim=-1)
+            appe_scores, ref_aux_descriptor = self.compute_appearance_score_sg(
+                best_template, pred_idx_objects, query_appe_descriptors
+            )
+
+            # compute the geometric score
+            image_uv = self.project_template_to_image(
+                best_template, pred_idx_objects, batch, detections.masks
+            )
+
+            geometric_score, visible_ratio = self.compute_geometric_score_sg(
+                image_uv,
+                detections,
+                query_appe_descriptors,
+                ref_aux_descriptor,
+                visible_thred=self.visible_thred,
+            )
 
         # final score
         final_score = (
@@ -690,8 +715,13 @@ class prompted_segmentation(Instance_Segmentation_Model):
         test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
 
         obj_templates_feats = self.ref_data["last_token"]
+        features_mask = obj_templates_feats.sum(dim=-1) > 0
+        mask_sum = features_mask.sum(dim=-1)
+        mask_sum[mask_sum == 0] = 1e-6
+        obj_templates_feats = obj_templates_feats.sum(dim=-2) / mask_sum.unsqueeze(-1)
+        obj_templates_feats = obj_templates_feats[mask_sum.any(dim=-1)]
 
-        obj_templates_feats = obj_templates_feats.mean(dim=0, keepdim=True)
+        obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
         test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
         obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
@@ -747,7 +777,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 last_token = self.descriptor_model.compute_masked_patch_last_token(
                     ref_imgs, ref_masks
                 )
-                last_token = last_token.mean(dim=0)
+                # last_token = last_token.mean(dim=0)
                 self.ref_data["last_token"].append(last_token)
 
             self.ref_data["last_token"].stack()
@@ -768,16 +798,22 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )[0]
 
         obj_templates_feats = self.ref_data["last_token"]
+        features_mask = obj_templates_feats.sum(dim=-1) > 0
+        mask_sum = features_mask.sum(dim=-1)
+        mask_sum[mask_sum == 0] = 1e-6
+        obj_templates_feats = obj_templates_feats.sum(dim=-2) / mask_sum.unsqueeze(-1)
+        obj_templates_feats = obj_templates_feats[mask_sum.any(dim=-1)]
+
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
-        o, c = obj_templates_feats.shape
+        o, t, c = obj_templates_feats.shape
         if grounding_info is not None:
-            obj_templates_feats = obj_templates_feats.view(o, num_heads, head_dim)
+            obj_templates_feats = obj_templates_feats.view(o, t, num_heads, head_dim)
             obj_templates_feats /= (
                 torch.norm(obj_templates_feats, dim=-1, keepdim=True) + 1e-6
             )
-        obj_templates_feats = obj_templates_feats.view(o, num_heads * head_dim)
-        obj_templates_feats = obj_templates_feats.mean(dim=0, keepdim=True)
+        obj_templates_feats = obj_templates_feats.view(o, t, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
         if grounding_info is not None:
             test_image_desc = test_image_desc.view(-1, num_heads, head_dim)
@@ -859,3 +895,46 @@ class prompted_segmentation(Instance_Segmentation_Model):
             f"Runtime: {end_time-start_time:.02f}s, Query shape: {self.ref_data['grounding_info'].shape}, \
             Query descriptors shape: {self.ref_data['grounding_info'].shape}"
         )
+
+    def compute_appearance_score_sg(
+        self, best_pose, pred_objects_idx, qurey_appe_descriptors
+    ):
+        """
+        Based on the best template, calculate appearance similarity indicated by appearance score
+        """
+        con_idx = torch.concatenate(
+            (pred_objects_idx[None, :], best_pose[None, :]), dim=0
+        )
+        ref_appe_descriptors = self.ref_data["last_token"][
+            con_idx[0, ...], con_idx[1, ...], ...
+        ]  # N_query x N_patch x N_feature
+
+        ref_appe_descriptors = F.normalize(ref_appe_descriptors, dim=-1)
+
+        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+        appe_scores = aux_metric.compute_straight(
+            qurey_appe_descriptors, ref_appe_descriptors
+        )
+        return appe_scores, ref_appe_descriptors
+
+    def compute_geometric_score_sg(
+        self,
+        image_uv,
+        proposals,
+        appe_descriptors,
+        ref_aux_descriptor,
+        visible_thred=0.5,
+    ):
+        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+        visible_ratio = aux_metric.compute_visible_ratio(
+            appe_descriptors, ref_aux_descriptor, visible_thred
+        )
+
+        # IoU calculation
+        y1x1 = torch.min(image_uv, dim=1).values
+        y2x2 = torch.max(image_uv, dim=1).values
+        xyxy = torch.concatenate((y1x1, y2x2), dim=-1)
+
+        iou = compute_iou(xyxy, proposals.boxes)
+
+        return iou, visible_ratio
