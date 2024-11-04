@@ -17,4 +17,4 @@ hydra:
 prompt_mode: self_grounding # "nomral" or "self_grounding"
 save_dir: ./log/${name_exp}
 name_exp: initial
-dataset_name: icbin
+dataset_name: itodd

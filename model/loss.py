@@ -74,6 +74,20 @@ class MaskedPatch_MatrixSimilarity(nn.Module):
         visible_ratio = sim_patches / valid_patches
 
         return visible_ratio
+    
+    def compute_target_ratio(self, query, reference, thred=0.5):
+
+        sim_matrix = torch.matmul(query, reference.permute(0, 2, 1)) # N_query x N_query_mask x N_refer_mask
+        sim_matrix = sim_matrix.max(-1)[0] # N_query x N_refer_mask
+        valid_patches = torch.count_nonzero(sim_matrix, dim=(1, )) + 1e-6
+
+        # fliter correspendence by thred
+        flitered_matrix = sim_matrix * (sim_matrix > thred)
+        sim_patches = torch.count_nonzero(flitered_matrix, dim=(1,))
+
+        visible_ratio = sim_patches / valid_patches
+
+        return visible_ratio
 
     def compute_similarity(self, query, reference):
         # all template computation

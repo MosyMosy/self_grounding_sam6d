@@ -156,12 +156,12 @@ class Base_Segmentation:
             seg_masks, seg_scores, stability_scores = self.segment_by_prompt_(
                 prompt, score_threshould, stability_thresh, prompt_mode=prompt_mode
             )
-        seg_scores = (seg_scores + stability_scores) / 2
+        # seg_scores = (seg_scores + stability_scores) / 2
 
-        sorted_idx = torch.argsort(seg_scores, descending=True)
-        seg_masks = seg_masks[sorted_idx]
-        seg_scores = seg_scores[sorted_idx]
-        return seg_masks, seg_scores
+        # sorted_idx = torch.argsort(seg_scores, descending=True)
+        # seg_masks = seg_masks[sorted_idx]
+        # seg_scores = seg_scores[sorted_idx]
+        return seg_masks, seg_scores, stability_scores
 
     def segment_by_box_prompt(
         self,

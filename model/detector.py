@@ -586,7 +586,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             test_image_sized,
             original_image_size=batch["image"][0].shape[-2:],
         )
-        seg_masks, seg_scores = self.segmentor_model.segment_by_prompt(
+        seg_masks, seg_scores, stability_scores = self.segmentor_model.segment_by_prompt(
             prompt=point_prompt_scaled,
             batch_size=64,
             score_threshould=0.88,
@@ -599,7 +599,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
         keep_idxs = self.segmentor_model.batched_nms(
             boxes=seg_boxes.float(),
-            scores=seg_scores,
+            scores=(seg_scores * stability_scores)/2,
             idxs=torch.zeros(len(seg_masks)).to(self.device),  # categories
             iou_threshold=0.7,
         )
@@ -630,57 +630,72 @@ class prompted_segmentation(Instance_Segmentation_Model):
             best_template,
         ) = self.compute_semantic_score(query_decriptors)
 
+
         # update detections
         detections.filter(idx_selected_proposals)
         query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
 
         # compute the appearance score
-        if self.prompt_mode == "normal":
-            appe_scores, ref_aux_descriptor = self.compute_appearance_score(
-                best_template, pred_idx_objects, query_appe_descriptors
-            )
-
-            # compute the geometric score
-            image_uv = self.project_template_to_image(
-                best_template, pred_idx_objects, batch, detections.masks
-            )
-
-            geometric_score, visible_ratio = self.compute_geometric_score(
-                image_uv,
-                detections,
+        # if self.prompt_mode == "normal":
+        # appe_scores, ref_aux_descriptor = self.compute_appearance_score(
+        #     best_template, pred_idx_objects, query_appe_descriptors
+        # )
+        appe_scores, ref_aux_descriptor, target_ratio = (
+            self.compute_appearance_score_new(
+                best_template,
+                pred_idx_objects,
                 query_appe_descriptors,
-                ref_aux_descriptor,
                 visible_thred=self.visible_thred,
             )
-        elif self.prompt_mode == "self_grounding":
-            if len(detections.masks.shape) == 4:
-                detections.masks.squeeze_(1)
-            grounding_info = self.ref_data["grounding_info"][pred_idx_objects]
-            _, query_appe_descriptors = self.descriptor_model.forward_with_sg(
-                batch["image"][0], detections, g_info=grounding_info
-            )
-            query_appe_descriptors = F.normalize(query_appe_descriptors, dim=-1)
-            appe_scores, ref_aux_descriptor = self.compute_appearance_score_sg(
-                best_template, pred_idx_objects, query_appe_descriptors
-            )
+        )
 
-            # compute the geometric score
-            image_uv = self.project_template_to_image(
-                best_template, pred_idx_objects, batch, detections.masks
-            )
+        # compute the geometric score
+        image_uv = self.project_template_to_image(
+            best_template, pred_idx_objects, batch, detections.masks
+        )
 
-            geometric_score, visible_ratio = self.compute_geometric_score_sg(
-                image_uv,
-                detections,
-                query_appe_descriptors,
-                ref_aux_descriptor,
-                visible_thred=self.visible_thred,
-            )
+        geometric_score, visible_ratio = self.compute_geometric_score(
+            image_uv,
+            detections,
+            query_appe_descriptors,
+            ref_aux_descriptor,
+            visible_thred=self.visible_thred,
+        )
+        # elif self.prompt_mode == "self_grounding":
+        #     if len(detections.masks.shape) == 4:
+        #         detections.masks.squeeze_(1)
+        #     grounding_info = self.ref_data["grounding_info"][pred_idx_objects]
+        #     _, query_appe_descriptors = self.descriptor_model.forward_with_sg(
+        #         batch["image"][0], detections, g_info=grounding_info
+        #     )
+        #     appe_scores, ref_aux_descriptor = self.compute_appearance_score_sg(
+        #         best_template, pred_idx_objects, query_appe_descriptors
+        #     )
+
+        #     # compute the geometric score
+        #     image_uv = self.project_template_to_image(
+        #         best_template, pred_idx_objects, batch, detections.masks
+        #     )
+
+        #     geometric_score, visible_ratio = self.compute_geometric_score_sg(
+        #         image_uv,
+        #         detections,
+        #         query_appe_descriptors,
+        #         ref_aux_descriptor,
+        #         visible_thred=self.visible_thred,
+        #     )
 
         # final score
         final_score = (
-            semantic_score + appe_scores + geometric_score * visible_ratio
+            semantic_score
+            + appe_scores
+            + geometric_score * visible_ratio
         ) / (1 + 1 + visible_ratio)
+        
+        final_score *= detections.seg_scores
+        # final_score = (
+        #     detections.seg_scores + appe_scores + geometric_score * visible_ratio
+        # ) / (1 + 1 + visible_ratio)
 
         detections.add_attribute("scores", final_score)
         detections.add_attribute("object_ids", pred_idx_objects)
@@ -719,7 +734,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         mask_sum = features_mask.sum(dim=-1)
         mask_sum[mask_sum == 0] = 1e-6
         obj_templates_feats = obj_templates_feats.sum(dim=-2) / mask_sum.unsqueeze(-1)
-        obj_templates_feats = obj_templates_feats[mask_sum.any(dim=-1)]
+        obj_templates_feats[mask_sum == 0] = 0  # avoid nan
 
         obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
@@ -802,29 +817,29 @@ class prompted_segmentation(Instance_Segmentation_Model):
         mask_sum = features_mask.sum(dim=-1)
         mask_sum[mask_sum == 0] = 1e-6
         obj_templates_feats = obj_templates_feats.sum(dim=-2) / mask_sum.unsqueeze(-1)
-        obj_templates_feats = obj_templates_feats[mask_sum.any(dim=-1)]
+        obj_templates_feats[mask_sum == 0] = 0  # avoid nan
+        # obj_templates_feats = obj_templates_feats[mask_sum.any(dim=-1)]
 
         num_heads = self.descriptor_model.model.num_heads
         head_dim = obj_templates_feats.shape[-1] // num_heads
         o, t, c = obj_templates_feats.shape
         if grounding_info is not None:
             obj_templates_feats = obj_templates_feats.view(o, t, num_heads, head_dim)
-            obj_templates_feats /= (
-                torch.norm(obj_templates_feats, dim=-1, keepdim=True) + 1e-6
-            )
+            obj_templates_feats = F.normalize(obj_templates_feats, dim=-1)
+
         obj_templates_feats = obj_templates_feats.view(o, t, num_heads * head_dim)
         obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
         if grounding_info is not None:
             test_image_desc = test_image_desc.view(-1, num_heads, head_dim)
             obj_templates_feats = obj_templates_feats.view(-1, num_heads, head_dim)
-            test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
-            obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+            test_image_desc = F.normalize(test_image_desc, dim=-1)
+            obj_templates_feats = F.normalize(obj_templates_feats, dim=-1)
 
         test_image_desc = test_image_desc.view(-1, num_heads * head_dim)
         obj_templates_feats = obj_templates_feats.view(-1, num_heads * head_dim)
-        test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
-        obj_templates_feats /= torch.norm(obj_templates_feats, dim=-1, keepdim=True)
+        test_image_desc = F.normalize(test_image_desc, dim=-1)
+        obj_templates_feats = F.normalize(obj_templates_feats, dim=-1)
 
         scene_obj_sim = test_image_desc @ obj_templates_feats.t()
 
@@ -909,7 +924,26 @@ class prompted_segmentation(Instance_Segmentation_Model):
             con_idx[0, ...], con_idx[1, ...], ...
         ]  # N_query x N_patch x N_feature
 
+        num_heads = self.descriptor_model.model.num_heads
+        head_dim = qurey_appe_descriptors.shape[-1] // num_heads
+
+        ref_appe_descriptors = ref_appe_descriptors.view(
+            *ref_appe_descriptors.shape[:-1], num_heads, head_dim
+        )
         ref_appe_descriptors = F.normalize(ref_appe_descriptors, dim=-1)
+        ref_appe_descriptors = ref_appe_descriptors.view(
+            *ref_appe_descriptors.shape[:-2], num_heads * head_dim
+        )
+        ref_appe_descriptors = F.normalize(ref_appe_descriptors, dim=-1)
+
+        qurey_appe_descriptors = qurey_appe_descriptors.view(
+            *qurey_appe_descriptors.shape[:-1], num_heads, head_dim
+        )
+        qurey_appe_descriptors = F.normalize(qurey_appe_descriptors, dim=-1)
+        qurey_appe_descriptors = qurey_appe_descriptors.view(
+            *qurey_appe_descriptors.shape[:-2], num_heads * head_dim
+        )
+        qurey_appe_descriptors = F.normalize(qurey_appe_descriptors, dim=-1)
 
         aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
         appe_scores = aux_metric.compute_straight(
@@ -921,13 +955,24 @@ class prompted_segmentation(Instance_Segmentation_Model):
         self,
         image_uv,
         proposals,
-        appe_descriptors,
+        qurey_appe_descriptors,
         ref_aux_descriptor,
         visible_thred=0.5,
     ):
+        num_heads = self.descriptor_model.model.num_heads
+        head_dim = qurey_appe_descriptors.shape[-1] // num_heads
+        qurey_appe_descriptors = qurey_appe_descriptors.view(
+            *qurey_appe_descriptors.shape[:-1], num_heads, head_dim
+        )
+        qurey_appe_descriptors = F.normalize(qurey_appe_descriptors, dim=-1)
+        qurey_appe_descriptors = qurey_appe_descriptors.view(
+            *qurey_appe_descriptors.shape[:-2], num_heads * head_dim
+        )
+        qurey_appe_descriptors = F.normalize(qurey_appe_descriptors, dim=-1)
+
         aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
         visible_ratio = aux_metric.compute_visible_ratio(
-            appe_descriptors, ref_aux_descriptor, visible_thred
+            qurey_appe_descriptors, ref_aux_descriptor, visible_thred
         )
 
         # IoU calculation
@@ -938,3 +983,31 @@ class prompted_segmentation(Instance_Segmentation_Model):
         iou = compute_iou(xyxy, proposals.boxes)
 
         return iou, visible_ratio
+
+    def compute_appearance_score_new(
+        self,
+        best_pose,
+        pred_objects_idx,
+        qurey_appe_descriptors,
+        visible_thred=0.5,
+    ):
+        """
+        Based on the best template, calculate appearance similarity indicated by appearance score
+        """
+        con_idx = torch.concatenate(
+            (pred_objects_idx[None, :], best_pose[None, :]), dim=0
+        )
+        ref_appe_descriptors = self.ref_data["appe_descriptors"][
+            con_idx[0, ...], con_idx[1, ...], ...
+        ]  # N_query x N_patch x N_feature
+
+        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+        appe_scores = aux_metric.compute_straight(
+            qurey_appe_descriptors, ref_appe_descriptors
+        )
+
+        target_ratio = aux_metric.compute_target_ratio(
+            qurey_appe_descriptors, ref_appe_descriptors, visible_thred
+        )
+
+        return appe_scores, ref_appe_descriptors, target_ratio
