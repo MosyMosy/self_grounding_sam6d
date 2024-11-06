@@ -7,6 +7,8 @@ visible_thred: 0.5
 pointcloud_sample_num: 2048
 sim_thresh: 0.6
 prompt_mode: ${prompt_mode} # "nomral" or "self_grounding"
+score_mode: ${score_mode} # "nomral" or "self_grounding"
+weight_scores: ${weight_scores} # True or False
 
 defaults:
 - segmentor_model: sam_new

@@ -15,6 +15,9 @@ hydra:
     dir: .
 
 prompt_mode: self_grounding # "nomral" or "self_grounding"
+score_mode: nomral # "nomral" or "self_grounding"
+weight_scores: True
+
 save_dir: ./log/${name_exp}
 name_exp: initial
 dataset_name: itodd
