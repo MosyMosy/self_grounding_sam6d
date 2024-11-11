@@ -173,3 +173,4 @@ lightning_logs/
 log/
 
 *.png
+*.pdf

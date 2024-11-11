@@ -9,7 +9,7 @@ def remove_segmentation(data):
     return data
 
 # Specify the directory containing the JSON files
-json_directory = "log/SAMg_sg_06_promptmode-self_grounding_scoremode-normal_weightscores-true"
+json_directory = "log/SAMg_06_promptmode-self_grounding_scoremode-normal_weightscores-false"
 
 # Iterate over all files in the directory
 for filename in os.listdir(json_directory):

@@ -19,7 +19,7 @@ class Base_Segmentation:
         self.input_size = 1024
         self.output_channels = 256
         self.patch_size = 16
-
+        self.statility_threshold = 1.0
         self.name = None
 
     def scale_image_prompt_to_dim(self, image, point_prompt=None, bbox_prompt=None):
@@ -39,10 +39,11 @@ class Base_Segmentation:
             point_prompt[..., 1] = point_prompt[..., 1] * H_new
             point_prompt.clamp_(0, self.input_size)
         if bbox_prompt is not None:
-            bbox_prompt[..., 0] = bbox_prompt[..., 0] * (W_new / W_old)
-            bbox_prompt[..., 2] = bbox_prompt[..., 2] * (W_new / W_old)
-            bbox_prompt[..., 1] = bbox_prompt[..., 1] * (H_new / H_old)
-            bbox_prompt[..., 3] = bbox_prompt[..., 3] * (H_new / H_old)
+            # bbox_prompt[..., 0] = bbox_prompt[..., 0] * (W_new / W_old)
+            # bbox_prompt[..., 2] = bbox_prompt[..., 2] * (W_new / W_old)
+            # bbox_prompt[..., 1] = bbox_prompt[..., 1] * (H_new / H_old)
+            # bbox_prompt[..., 3] = bbox_prompt[..., 3] * (H_new / H_old)
+            raise NotImplementedError
         return image_sized, point_prompt, bbox_prompt, scale
 
     def encode_image(self, processed_image: torch.Tensor, original_image_size: tuple):
@@ -112,7 +113,7 @@ class Base_Segmentation:
             score = score[score > score_threshould]
 
         if stability_thresh is not None:
-            stability_score = calculate_stability_score(seg_mask, 0, 1.0)
+            stability_score = calculate_stability_score(seg_mask, 0, self.statility_threshold)
             seg_mask = seg_mask[stability_score >= stability_thresh]
             score = score[stability_score >= stability_thresh]
             stability_score = stability_score[stability_score >= stability_thresh]

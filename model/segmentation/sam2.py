@@ -2,7 +2,7 @@ import warnings
 
 import torch
 from torchvision import transforms
-from segmentation.base_segmentation import Base_Segmentation
+from model.segmentation.base_segmentation import Base_Segmentation
 
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -15,10 +15,10 @@ from torchvision.transforms import Normalize, Resize, ToTensor
 
 class SAM2_Seg(Base_Segmentation):
     checkpoint_dic = {
-        "hiera_l": "checkpoints/SAM2_Wraper/sam2_hiera_large.pt",
-        "hiera_b": "checkpoints/SAM2_Wraper/sam2_hiera_base_plus.pt",
-        "hiera_s": "checkpoints/SAM2_Wraper/sam2_hiera_small.pt",
-        "hiera_t": "checkpoints/SAM2_Wraper/sam2_hiera_tiny.pt",
+        "hiera_l": "sam2_hiera_large.pt",
+        "hiera_b": "sam2_hiera_base_plus.pt",
+        "hiera_s": "sam2_hiera_small.pt",
+        "hiera_t": "sam2_hiera_tiny.pt",
     }
     config_dic = {
         "hiera_l": "sam2_hiera_l.yaml",
@@ -27,29 +27,35 @@ class SAM2_Seg(Base_Segmentation):
         "hiera_t": "sam2_hiera_t.yaml",
     }
 
-    def __init__(self, model_type="hiera_l", device="cpu") -> None:
-        super().__init__(device=device)
+    def __init__(self, model_type="hiera_l", checkpoint_dir="./checkpoints/segment-anything_2/") -> None:
+        super().__init__()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             self.predictor = SAM2ImagePredictor(
                 build_sam2(
                     SAM2_Seg.config_dic[model_type],
-                    SAM2_Seg.checkpoint_dic[model_type],
+                    checkpoint=checkpoint_dir + SAM2_Seg.checkpoint_dic[model_type],
                 )
             )
         # self.predictor.eval().to(device)
 
         self.predictor._transforms.to_tensor = lambda x: x
-        self.predictor._transforms.transforms = Resize(
-            (
-                self.predictor._transforms.resolution,
-                self.predictor._transforms.resolution,
-            )
-        )
 
     def scale_image_prompt_to_dim(
         self, image, point_prompt=None, bbox_prompt=None, max_size=1024
     ):
+        H_new, W_new = image.shape[-2:]
+        if point_prompt is not None:
+            # point_prompt = point_prompt * scale
+            point_prompt[..., 0] = point_prompt[..., 0] * W_new
+            point_prompt[..., 1] = point_prompt[..., 1] * H_new
+            point_prompt.clamp_(0, max(W_new , H_new ))
+        if bbox_prompt is not None:
+            # bbox_prompt[..., 0] = bbox_prompt[..., 0] * (W_new / W_old)
+            # bbox_prompt[..., 2] = bbox_prompt[..., 2] * (W_new / W_old)
+            # bbox_prompt[..., 1] = bbox_prompt[..., 1] * (H_new / H_old)
+            # bbox_prompt[..., 3] = bbox_prompt[..., 3] * (H_new / H_old)
+            raise NotImplementedError
         return image, point_prompt, bbox_prompt, 1
 
     def encode_image(self, processed_image: torch.Tensor, original_image_size: tuple):
@@ -194,7 +200,7 @@ class SAM2_Seg(Base_Segmentation):
         )
 
         masks, iou_predictions, low_res_masks = self.predictor._predict(
-            unnorm_coords,
+            unnorm_coords.int(),
             labels,
             unnorm_box,
             mask_input,

@@ -34,7 +34,8 @@ class Instance_Segmentation_Model(pl.LightningModule):
         log_interval,
         log_dir,
         visible_thred,
-        pointcloud_sample_num,
+        pointcloud_sample_num,        
+        weight_scores = False,
         **kwargs,
     ):
         # define the network
@@ -51,6 +52,8 @@ class Instance_Segmentation_Model(pl.LightningModule):
 
         self.visible_thred = visible_thred
         self.pointcloud_sample_num = pointcloud_sample_num
+        
+        self.weight_scores = weight_scores
 
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(osp.join(self.log_dir, "predictions"), exist_ok=True)
@@ -446,6 +449,10 @@ class Instance_Segmentation_Model(pl.LightningModule):
         final_score = (
             semantic_score + appe_scores + geometric_score * visible_ratio
         ) / (1 + 1 + visible_ratio)
+        
+        if self.weight_scores:
+            final_score *= detections.seg_scores
+        
 
         detections.add_attribute("scores", final_score)
         detections.add_attribute("object_ids", pred_idx_objects)
@@ -512,12 +519,13 @@ class prompted_segmentation(Instance_Segmentation_Model):
             log_dir,
             visible_thred,
             pointcloud_sample_num,
+            weight_scores,
             **kwargs,
         )
         self.sim_thresh = sim_thresh
         self.prompt_mode = prompt_mode
         self.score_mode = score_mode
-        self.weight_scores = weight_scores
+        # self.weight_scores = weight_scores
 
     def test_step(self, batch, idx):
         if idx == 0:
@@ -536,6 +544,9 @@ class prompted_segmentation(Instance_Segmentation_Model):
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
 
         proposal_stage_start_time = time.time()
+        
+        # if batch["scene_id"][0] != 13 and batch["frame_id"][0] != 470:
+        #     return 0
 
         if self.prompt_mode == "normal":
             foreground_prompt_locations, foreground_prompt_map = (
@@ -556,19 +567,23 @@ class prompted_segmentation(Instance_Segmentation_Model):
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        """import torch.nn.functional as F
-        from torchvision import utils as vutils
+        # import torch.nn.functional as F
+        # from torchvision import utils as vutils
 
-        foreground_prompt_map = foreground_prompt_map.permute(
-            2, 0, 1
-        ).float()
-        foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(480, 640), mode='nearest')
-        foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
+        # foreground_prompt_map = foreground_prompt_map.permute(
+        #     2, 0, 1
+        # ).float()
+        # foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(480, 640), mode='nearest')
+        # vutils.save_image(
+        #     foreground_prompt_map, f"mask_prompts.png"
+        # )
+        # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
+        # result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
 
-        vutils.save_image(
-            result, f"positives_token.png"
-        )"""
+        # vutils.save_image(
+        #     result, f"positives_prompts.png"
+        # )
+        
 
         # foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)
 
@@ -585,7 +600,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 # max_size=detector.input_size,
             )
         )
-
+        point_prompt_scaled = point_prompt_scaled[:1500] # limit the number of prompts
         _ = self.segmentor_model.encode_image(
             test_image_sized,
             original_image_size=batch["image"][0].shape[-2:],
@@ -601,6 +616,9 @@ class prompted_segmentation(Instance_Segmentation_Model):
         if len(seg_masks) == 0:
             return 0
         seg_masks = seg_masks > 0
+        seg_masks = seg_masks.float()
+        seg_scores = seg_scores.float()
+        stability_scores = stability_scores.float()
         seg_boxes = self.segmentor_model.get_bounding_boxes_batch(seg_masks)
         keep_idxs = self.segmentor_model.batched_nms(
             boxes=seg_boxes.float(),
@@ -680,6 +698,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 ref_aux_descriptor,
                 visible_thred=self.visible_thred,
             )
+        else:
+            raise NotImplementedError
 
         final_score = (
             semantic_score + appe_scores + geometric_score * visible_ratio
