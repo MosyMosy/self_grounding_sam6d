@@ -1,20 +1,19 @@
-# Instance Segmentation Model (ISM) for SAM-6D 
+# Prompt Generation for Model-Based Instance Segmentation of Unseen Objects
 
 
 ## Requirements
-The code has been tested with
-- python 3.9.6
-- pytorch 2.0.0
-- CUDA 11.3
-
 Create conda environment:
 
 ```
 conda env create -f environment.yml
-conda activate sam6d-ism
+conda activate SG-SAM
+
+pip install pip==23.3.2
+pip install pytorch-lightning==1.8.1
 
 # for using SAM
 pip install git+https://github.com/facebookresearch/segment-anything.git
+
 
 # for using fastSAM
 pip install ultralytics==8.0.135
@@ -52,21 +51,20 @@ To evaluate the model on BOP datasets, please run the following commands:
 # Specify a specific GPU
 export CUDA_VISIBLE_DEVICES=0
 
-# with sam
-python run_inference.py dataset_name=$DATASET
+# For our MPG (all datasets):
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=normal weight_scores=False name_exp=prompt dataset_name=$dataset; done
 
-# with fastsam
-python run_inference.py dataset_name=$DATASET model=ISM_fastsam
+# For our MPG + SG (all datasets):
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=self_grounding weight_scores=False name_exp=prompt dataset_name=$dataset; done
+
+# For our MPG + SG + CW(all datasets):
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=self_grounding weight_scores=True name_exp=prompt dataset_name=$dataset; done
 ```
 
-The string "DATASET" could be set as `lmo`, `icbin`, `itodd`, `hb`, `tless`, `tudl` or `ycbv`.
+To rebuild all the figures and analysis, use the scripts provided in the lab directory:
 
+## Acknowledgments
 
-## Acknowledgements
-
-- [CNOS](https://github.com/nv-nguyen/cnos)
-- [SAM](https://github.com/facebookresearch/segment-anything)
-- [FastSAM](https://github.com/CASIA-IVA-Lab/FastSAM)
-- [DINOv2](https://github.com/facebookresearch/dinov2)
+This code is based on the [SAM6D](https://github.com/JiehongLin/SAM-6D) codebase. We appreciate all their efforts and thank them for sharing the code.
 
                                                               

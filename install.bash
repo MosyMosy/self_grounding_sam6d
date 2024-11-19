@@ -2,7 +2,7 @@
 conda env create -f environment.yml
 
 # Activate the environment
-conda activate sam6d-ism
+conda activate SG-SAM
 
 pip install pip==23.3.2
 pip install pytorch-lightning==1.8.1
