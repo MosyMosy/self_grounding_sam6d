@@ -21,6 +21,7 @@ from utils.trimesh_utils import depth_image_to_pointcloud_translate_torch
 from utils.poses.pose_utils import get_obj_poses_from_template_level
 from utils.bbox_utils import xyxy_to_xywh, compute_iou
 import torch.nn.functional as F
+from PIL import Image
 
 
 class Instance_Segmentation_Model(pl.LightningModule):
@@ -34,8 +35,8 @@ class Instance_Segmentation_Model(pl.LightningModule):
         log_interval,
         log_dir,
         visible_thred,
-        pointcloud_sample_num,        
-        weight_scores = False,
+        pointcloud_sample_num,
+        weight_scores=False,
         **kwargs,
     ):
         # define the network
@@ -52,7 +53,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
 
         self.visible_thred = visible_thred
         self.pointcloud_sample_num = pointcloud_sample_num
-        
+
         self.weight_scores = weight_scores
 
         os.makedirs(self.log_dir, exist_ok=True)
@@ -449,10 +450,9 @@ class Instance_Segmentation_Model(pl.LightningModule):
         final_score = (
             semantic_score + appe_scores + geometric_score * visible_ratio
         ) / (1 + 1 + visible_ratio)
-        
+
         if self.weight_scores:
             final_score *= detections.seg_scores
-        
 
         detections.add_attribute("scores", final_score)
         detections.add_attribute("object_ids", pred_idx_objects)
@@ -507,6 +507,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         prompt_mode,
         score_mode,
         weight_scores,
+        num_templates,
         **kwargs,
     ):
         super().__init__(
@@ -525,7 +526,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         self.sim_thresh = sim_thresh
         self.prompt_mode = prompt_mode
         self.score_mode = score_mode
-        # self.weight_scores = weight_scores
+        self.num_templates = num_templates
 
     def test_step(self, batch, idx):
         if idx == 0:
@@ -544,7 +545,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
 
         proposal_stage_start_time = time.time()
-        
+
         # if batch["scene_id"][0] != 13 and batch["frame_id"][0] != 470:
         #     return 0
 
@@ -553,19 +554,17 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 self.generate_foreground_prompt(batch, threshold=self.sim_thresh)
             )
         elif self.prompt_mode == "self_grounding":
-            grounding_info = self.ref_data["grounding_info"]
-            # average all the objects to form a foreground grounding info
-            grounding_info = grounding_info.mean(dim=0).unsqueeze(0)
             foreground_prompt_locations, foreground_prompt_map = (
-                self.generate_foreground_prompt_sg(
-                    batch, grounding_info, threshold=self.sim_thresh
-                )
+                self.generate_foreground_prompt_sg(batch, threshold=self.sim_thresh)
             )
         else:
             raise NotImplementedError
 
         if len(foreground_prompt_locations) == 0:
             return 0
+
+        # if self.dataset_name == "itodd":
+            # foreground_prompt_locations = foreground_prompt_locations[:1000]
 
         # import torch.nn.functional as F
         # from torchvision import utils as vutils
@@ -578,12 +577,11 @@ class prompted_segmentation(Instance_Segmentation_Model):
         #     foreground_prompt_map, f"mask_prompts.png"
         # )
         # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
-        # result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"]) 
+        # result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"])
 
         # vutils.save_image(
         #     result, f"positives_prompts.png"
         # )
-        
 
         # foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)
 
@@ -600,7 +598,6 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 # max_size=detector.input_size,
             )
         )
-        point_prompt_scaled = point_prompt_scaled[:1500] # limit the number of prompts
         _ = self.segmentor_model.encode_image(
             test_image_sized,
             original_image_size=batch["image"][0].shape[-2:],
@@ -679,6 +676,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             if len(detections.masks.shape) == 4:
                 detections.masks.squeeze_(1)
             grounding_info = self.ref_data["grounding_info"][pred_idx_objects]
+            grounding_info = grounding_info.mean(dim=(0, 1)).unsqueeze(0)
             _, query_appe_descriptors = self.descriptor_model.forward_with_sg(
                 batch["image"][0], detections, g_info=grounding_info
             )
@@ -746,7 +744,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         mask_sum[mask_sum == 0] = 1e-6
         obj_templates_feats = obj_templates_feats.sum(dim=-2) / mask_sum.unsqueeze(-1)
         obj_templates_feats[mask_sum == 0] = 0  # avoid nan
-
+        obj_templates_feats = obj_templates_feats[:,:self.num_templates]
         obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
         test_image_desc /= torch.norm(test_image_desc, dim=-1, keepdim=True)
@@ -818,7 +816,11 @@ class prompted_segmentation(Instance_Segmentation_Model):
             Query descriptors shape: {self.ref_data['last_token'].shape}"
         )
 
-    def generate_foreground_prompt_sg(self, batch, grounding_info, threshold=0.4):
+    def generate_foreground_prompt_sg(self, batch, threshold=0.4):
+        grounding_info = self.ref_data["grounding_info"][:,:self.num_templates]
+        # average all the objects to form a foreground grounding info
+        grounding_info = grounding_info.mean(dim=(0, 1)).unsqueeze(0)
+
         test_image_desc = self.descriptor_model.encode_full_size(
             batch["image"], g_info=grounding_info
         )[0]
@@ -839,6 +841,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             obj_templates_feats = F.normalize(obj_templates_feats, dim=-1)
 
         obj_templates_feats = obj_templates_feats.view(o, t, num_heads * head_dim)
+        obj_templates_feats = obj_templates_feats[:,:self.num_templates]
         obj_templates_feats = obj_templates_feats.mean(dim=(0, 1)).unsqueeze(0)
 
         if grounding_info is not None:
@@ -907,7 +910,11 @@ class prompted_segmentation(Instance_Segmentation_Model):
                 ref_query = self.descriptor_model.compute_masked_patch_average_tokens(
                     ref_imgs, ref_masks
                 )
-                ref_query = ref_query.mean(dim=0)
+                if len(ref_query) < 42:
+                    average = ref_query.mean(dim=0).unsqueeze(0)
+                    average = average.repeat(42 - len(ref_query), 1, 1, 1)
+                    ref_query = torch.cat((ref_query, average), dim=0)
+                # ref_query = ref_query.mean(dim=0)
                 self.ref_data["grounding_info"].append(ref_query)
 
             self.ref_data["grounding_info"].stack()
@@ -994,3 +1001,162 @@ class prompted_segmentation(Instance_Segmentation_Model):
         iou = compute_iou(xyxy, proposals.boxes)
 
         return iou, visible_ratio
+
+
+class prompt_quality(prompted_segmentation):
+    def __init__(
+        self,
+        segmentor_model,
+        descriptor_model,
+        onboarding_config,
+        matching_config,
+        post_processing_config,
+        log_interval,
+        log_dir,
+        visible_thred,
+        pointcloud_sample_num,
+        sim_thresh,
+        prompt_mode,
+        score_mode,
+        weight_scores,
+        num_templates,
+        **kwargs,
+    ):
+        super().__init__(
+            segmentor_model,
+            descriptor_model,
+            onboarding_config,
+            matching_config,
+            post_processing_config,
+            log_interval,
+            log_dir,
+            visible_thred,
+            pointcloud_sample_num,
+            sim_thresh,
+            prompt_mode,
+            score_mode,
+            weight_scores,
+            num_templates,
+            **kwargs,
+        )
+
+        self.sg_quality = []
+        self.grid_quality = []
+
+    def test_step(self, batch, idx):
+        if idx == 0:
+            # os.makedirs(
+            #     osp.join(
+            #         self.log_dir,
+            #         f"predictions/{self.dataset_name}/{self.name_prediction_file}",
+            #     ),
+            #     exist_ok=True,
+            # )
+            self.set_reference_objects()
+            self.set_reference_object_pointcloud()
+            self.set_last_token()
+            self.set_grounding_info()
+            self.move_to_device()
+        assert batch["image"].shape[0] == 1, "Batch size must be 1"
+
+        # if batch["scene_id"][0] != 13 and batch["frame_id"][0] != 470:
+        #     return 0
+
+        if self.prompt_mode == "normal":
+            foreground_prompt_locations, foreground_prompt_map = (
+                self.generate_foreground_prompt(batch, threshold=self.sim_thresh)
+            )
+        elif self.prompt_mode == "self_grounding":
+            foreground_prompt_locations, foreground_prompt_map = (
+                self.generate_foreground_prompt_sg(batch, threshold=self.sim_thresh)
+            )
+        else:
+            raise NotImplementedError
+
+        if len(foreground_prompt_locations) == 0:
+            return 0
+
+        #  scale the prompt to image size
+        foreground_prompt_locations[..., 0] = (
+            foreground_prompt_locations[..., 0] / self.descriptor_model.full_size[1]
+        ) * batch["image"].shape[-1]
+        foreground_prompt_locations[..., 1] = (
+            foreground_prompt_locations[..., 1] / self.descriptor_model.full_size[0]
+        ) * batch["image"].shape[-2]
+
+        grid_size = (32, 32)
+        grid_prompt_locations = self.segmentor_model.generate_patch_grid_points(
+            grid_size,
+            14,
+            device=self.device,
+            corners=False,
+        )
+        grid_prompt_locations = grid_prompt_locations.flatten(0, 1)
+        #  scale the prompt to image size
+        grid_prompt_locations[..., 0] = (
+            grid_prompt_locations[..., 0] / (14 * grid_size[0])
+        ) * batch["image"].shape[-1]
+        grid_prompt_locations[..., 1] = (
+            grid_prompt_locations[..., 1] / (14 * grid_size[1])
+        ) * batch["image"].shape[-2]
+
+        mask_visib_path = os.path.join(batch["scene_path"][0], "mask_visib")
+        foreground_masks = self.find_and_convert_images(
+            mask_visib_path, str(batch["frame_id"][0].item()).zfill(6)
+        )
+        foreground_masks = foreground_masks.sum(dim=0).squeeze(0)
+
+        # prompt locations to pixes coordinates
+        foreground_prompt_locations = foreground_prompt_locations[:, [1, 0]].int()
+        grid_prompt_locations = grid_prompt_locations[:, [1, 0]].int()
+
+        prompt_foreground_map = foreground_masks[
+            foreground_prompt_locations[:, 0], foreground_prompt_locations[:, 1]
+        ]
+        grid_foreground_map = foreground_masks[
+            grid_prompt_locations[:, 0], grid_prompt_locations[:, 1]
+        ]
+
+        self.sg_quality.append(prompt_foreground_map.mean().item())
+        self.grid_quality.append(grid_foreground_map.mean().item())
+
+    def find_and_convert_images(self, directory, prefix):
+        # Transform to convert images to PyTorch tensors
+        transform = T.Compose(
+            [
+                T.ToTensor(),  # Convert image to tensor
+            ]
+        )
+
+        # List to store tensors
+        image_tensors = []
+
+        # Walk through the directory
+        for filename in os.listdir(directory):
+            # Check if the file starts with the specific prefix
+            if filename.startswith(prefix) and filename.lower().endswith(
+                ("png", "jpg", "jpeg", "bmp", "tif", "tiff")
+            ):
+                # Construct full file path
+                file_path = os.path.join(directory, filename)
+
+                # Open the image
+                with Image.open(file_path) as img:
+                    # Apply transformations and convert to tensor
+                    tensor = transform(img).to(self.device)
+                    image_tensors.append(tensor)
+
+        return torch.stack(image_tensors)
+
+    def test_epoch_end(self, outputs):
+        quality_path = f"{self.log_dir}/{self.dataset_name}_prompt_quality.csv"
+
+        # average the list
+        sg_quality = sum(self.sg_quality) / len(self.sg_quality)
+        grid_quality = sum(self.grid_quality) / len(self.grid_quality)
+
+        # save the quality lists to csv
+        with open(quality_path, "w") as f:
+            f.write("grid, sg\n")
+            f.write(f"{grid_quality}, {sg_quality}\n")
+

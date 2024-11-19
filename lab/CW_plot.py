@@ -15,8 +15,8 @@ bar_width = 0.20
 x = np.arange(3)
 
 # Plot bars with color, cropping lower limit to emphasize differences
-plt.bar(x - bar_width/2, values[::2], width=bar_width, label='Without CW', color='steelblue')
-plt.bar(x + bar_width/2, values[1::2], width=bar_width, label='With CW', color='darkorange')
+plt.bar(x - bar_width/2, values[::2], width=bar_width, label='Without CW', color='#af4b91')
+plt.bar(x + bar_width/2, values[1::2], width=bar_width, label='With CW', color='#41afaa')
 
 # Adding transparent, dotted gray horizontal lines across plot
 for y in np.arange(47, 50.1, 0.5):  # Spacing lines every 0.5 units

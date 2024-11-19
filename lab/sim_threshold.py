@@ -14,9 +14,9 @@ font_size = 18
 axis_size = 14
 
 # Define colors for each chart and selected threshold
-time_color = "royalblue"
-acc_color = "mediumseagreen"
-current_color = "salmon"
+time_color = "#466eb4"
+acc_color = "#d7642c"
+current_color = "#41afaa"
 
 # Plotting the data with specified font sizes and colors
 fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(8, 4))

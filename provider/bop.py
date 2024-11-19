@@ -127,6 +127,8 @@ class BaseBOPTest(BaseBOP):
         depth = self.load_depth_img(idx)
         cam_intrinsic = np.array(cam_intrinsic).reshape((3, 3))
         depth_scale = self.camemra_params[scene_id][f"{frame_id}"]["depth_scale"]
+        
+        sceen_path = os.path.dirname(os.path.dirname(rgb_path))
 
         return dict(
             image=image,
@@ -135,6 +137,7 @@ class BaseBOPTest(BaseBOP):
             depth=depth.astype(np.int32),
             cam_intrinsic=cam_intrinsic,
             depth_scale=depth_scale,
+            scene_path=sceen_path,
         )
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ defaults:
 - machine: local
 - callback: base
 - data: bop
-- model: ISM_sam_prompt #ISM_sam_prompt #ISM_sam  #ISM_fastsam
+- model: ISM_sam_prompt #ISM_sam_prompt #ISM_sam  #ISM_fastsam ISM_prompt_quality
 
 - _self_
 - override hydra/hydra_logging: disabled
@@ -14,7 +14,7 @@ hydra:
   run:
     dir: .
 
-prompt_mode: normal # "normal" or "self_grounding"
+prompt_mode: self_grounding # "normal" or "self_grounding"
 score_mode: normal # "normal" or "self_grounding"
 weight_scores: True
 
@@ -22,3 +22,4 @@ save_dir: ./log/${name_exp}
 name_exp: initial
 dataset_name: itodd
 sim_thresh: 0.6
+num_templates: 42
