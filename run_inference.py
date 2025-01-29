@@ -6,7 +6,6 @@ from hydra.utils import instantiate
 from torch.utils.data import DataLoader
 import os.path as osp
 
-
 @hydra.main(
     version_base=None,
     config_path="/export/livia/home/vision/Myazdanpanah/projects/self_grounding_sam6d/configs/",
@@ -84,6 +83,7 @@ def run_inference(cfg: DictConfig):
     level_template = cfg.model.onboarding_config.level_templates
     model.name_prediction_file = f"result_{cfg.dataset_name}"
     logging.info(f"Loading dataloader for {cfg.dataset_name} done!")
+    
     trainer.test(
         model,
         dataloaders=query_dataloader,

@@ -37,6 +37,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
         visible_thred,
         pointcloud_sample_num,
         weight_scores=False,
+        num_templates=42,
         **kwargs,
     ):
         # define the network
@@ -55,6 +56,8 @@ class Instance_Segmentation_Model(pl.LightningModule):
         self.pointcloud_sample_num = pointcloud_sample_num
 
         self.weight_scores = weight_scores
+        
+        self.num_templates = num_templates
 
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(osp.join(self.log_dir, "predictions"), exist_ok=True)
@@ -303,7 +306,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
     def compute_semantic_score(self, proposal_decriptors):
         # compute matching scores for each proposals
         scores = self.matching_config.metric(
-            proposal_decriptors, self.ref_data["descriptors"]
+            proposal_decriptors, self.ref_data["descriptors"][:,:self.num_templates]
         )  # N_proposals x N_objects x N_templates
         if self.matching_config.aggregation_function == "mean":
             score_per_proposal_and_object = (
@@ -314,7 +317,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
         elif self.matching_config.aggregation_function == "max":
             score_per_proposal_and_object = torch.max(scores, dim=-1)[0]
         elif self.matching_config.aggregation_function == "avg_5":
-            score_per_proposal_and_object = torch.topk(scores, k=5, dim=-1)[0]
+            score_per_proposal_and_object = torch.topk(scores, k=min(5, self.num_templates), dim=-1)[0]
             score_per_proposal_and_object = torch.mean(
                 score_per_proposal_and_object, dim=-1
             )
@@ -347,7 +350,7 @@ class Instance_Segmentation_Model(pl.LightningModule):
         con_idx = torch.concatenate(
             (pred_objects_idx[None, :], best_pose[None, :]), dim=0
         )
-        ref_appe_descriptors = self.ref_data["appe_descriptors"][
+        ref_appe_descriptors = self.ref_data["appe_descriptors"][:,:self.num_templates][
             con_idx[0, ...], con_idx[1, ...], ...
         ]  # N_query x N_patch x N_feature
 
@@ -504,6 +507,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
         visible_thred,
         pointcloud_sample_num,
         sim_thresh,
+        sg_thresh,
         prompt_mode,
         score_mode,
         weight_scores,
@@ -524,9 +528,15 @@ class prompted_segmentation(Instance_Segmentation_Model):
             **kwargs,
         )
         self.sim_thresh = sim_thresh
+        self.sg_thresh = sg_thresh
         self.prompt_mode = prompt_mode
         self.score_mode = score_mode
         self.num_templates = num_templates
+        
+        if self.prompt_mode == "self_grounding":
+            for _, module in self.descriptor_model.named_modules():
+                if module.__class__.__name__ in ["Attention", "MemEffAttention"]:  # Match by class name
+                    setattr(module, "sg_threshold", self.sg_thresh)
 
     def test_step(self, batch, idx):
         if idx == 0:
@@ -553,7 +563,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             foreground_prompt_locations, foreground_prompt_map = (
                 self.generate_foreground_prompt(batch, threshold=self.sim_thresh)
             )
-        elif self.prompt_mode == "self_grounding":
+        elif self.prompt_mode == "self_grounding":            
             foreground_prompt_locations, foreground_prompt_map = (
                 self.generate_foreground_prompt_sg(batch, threshold=self.sim_thresh)
             )
@@ -563,8 +573,8 @@ class prompted_segmentation(Instance_Segmentation_Model):
         if len(foreground_prompt_locations) == 0:
             return 0
 
-        # if self.dataset_name == "itodd":
-            # foreground_prompt_locations = foreground_prompt_locations[:1000]
+        if self.dataset_name == "itodd":
+            foreground_prompt_locations = foreground_prompt_locations[:2000]
 
         # import torch.nn.functional as F
         # from torchvision import utils as vutils
@@ -573,14 +583,15 @@ class prompted_segmentation(Instance_Segmentation_Model):
         #     2, 0, 1
         # ).float()
         # foreground_prompt_map = F.interpolate(foreground_prompt_map.unsqueeze(0), size=(480, 640), mode='nearest')
+        
         # vutils.save_image(
-        #     foreground_prompt_map, f"mask_prompts.png"
+        #     foreground_prompt_map, f"mask_prompts_{self.sim_thresh}.png"
         # )
         # foreground_prompt_map[foreground_prompt_map == 0] = 0.2
         # result =  foreground_prompt_map * self.inv_rgb_transform(batch["image"])
 
         # vutils.save_image(
-        #     result, f"positives_prompts.png"
+        #     result, f"positives_prompts_{self.sim_thresh}.png"
         # )
 
         # foreground_prompt_locations = foreground_prompt_locations.flatten(0,1)
@@ -635,9 +646,13 @@ class prompted_segmentation(Instance_Segmentation_Model):
         )
 
         # compute semantic descriptors and appearance descriptors for query proposals
-        query_decriptors, query_appe_descriptors = self.descriptor_model(
-            batch["image"][0], detections
-        )
+        try:
+            query_decriptors, query_appe_descriptors = self.descriptor_model(
+                batch["image"][0], detections
+            )
+        except:
+            return 0
+        
 
         proposal_stage_end_time = time.time()
 

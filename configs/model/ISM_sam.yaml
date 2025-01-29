@@ -5,6 +5,7 @@ segmentor_width_size: 640 # make it stable
 descriptor_width_size: 640
 visible_thred: 0.5
 pointcloud_sample_num: 2048
+num_templates: ${num_templates}
 
 defaults:
 - segmentor_model: sam

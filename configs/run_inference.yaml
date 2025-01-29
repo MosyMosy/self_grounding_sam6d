@@ -16,10 +16,11 @@ hydra:
 
 prompt_mode: self_grounding # "normal" or "self_grounding"
 score_mode: normal # "normal" or "self_grounding"
-weight_scores: True
+weight_scores: False
 
 save_dir: ./log/${name_exp}
 name_exp: initial
-dataset_name: itodd
+dataset_name: lmo
 sim_thresh: 0.6
+sg_thresh: 0.7
 num_templates: 42

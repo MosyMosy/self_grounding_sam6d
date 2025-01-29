@@ -6,6 +6,7 @@ descriptor_width_size: 640
 visible_thred: 0.5
 pointcloud_sample_num: 2048
 sim_thresh: ${sim_thresh}
+sg_thresh: ${sg_thresh}
 prompt_mode: ${prompt_mode} # "nomral" or "self_grounding"
 score_mode: ${score_mode} # "nomral" or "self_grounding"
 weight_scores: ${weight_scores} # True or False
