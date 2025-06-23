@@ -113,7 +113,9 @@ class Base_Segmentation:
             score = score[score > score_threshould]
 
         if stability_thresh is not None:
-            stability_score = calculate_stability_score(seg_mask, 0, self.statility_threshold)
+            stability_score = calculate_stability_score(
+                seg_mask, 0, self.statility_threshold
+            )
             seg_mask = seg_mask[stability_score >= stability_thresh]
             score = score[stability_score >= stability_thresh]
             stability_score = stability_score[stability_score >= stability_thresh]

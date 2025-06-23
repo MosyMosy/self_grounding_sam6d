@@ -123,7 +123,7 @@ class BaseBOPTest(BaseBOP):
         frame_id = self.metaData.iloc[idx]["frame_id"]
         cam_intrinsic = self.metaData.iloc[idx]["intrinsic"]
         image = Image.open(rgb_path)
-        image = self.rgb_transform(image.convert("RGB"))
+        image_tensor = self.rgb_transform(image.convert("RGB"))
         depth = self.load_depth_img(idx)
         cam_intrinsic = np.array(cam_intrinsic).reshape((3, 3))
         depth_scale = self.camemra_params[scene_id][f"{frame_id}"]["depth_scale"]
@@ -131,7 +131,8 @@ class BaseBOPTest(BaseBOP):
         sceen_path = os.path.dirname(os.path.dirname(rgb_path))
 
         return dict(
-            image=image,
+            image=image_tensor,
+            rgb_path = rgb_path,
             scene_id=scene_id,
             frame_id=frame_id,
             depth=depth.astype(np.int32),

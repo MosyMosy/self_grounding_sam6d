@@ -52,13 +52,13 @@ To evaluate the model on BOP datasets, please run the following commands:
 export CUDA_VISIBLE_DEVICES=0
 
 # For our MPG (all datasets):
-for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=normal weight_scores=False name_exp=prompt dataset_name=$dataset; done
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_sam_prompt prompt_mode=normal weight_scores=False name_exp=prompt dataset_name=$dataset; done
 
 # For our MPG + SG (all datasets):
-for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=self_grounding weight_scores=False name_exp=prompt dataset_name=$dataset; done
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_sam_prompt prompt_mode=self_grounding weight_scores=False name_exp=prompt dataset_name=$dataset; done
 
 # For our MPG + SG + CW(all datasets):
-for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_prompt prompt_mode=self_grounding weight_scores=True name_exp=prompt dataset_name=$dataset; done
+for dataset in icbin ycbv tudl lmo tless itodd hb; do python run_inference.py model=ISM_sam_prompt prompt_mode=self_grounding weight_scores=True name_exp=prompt dataset_name=$dataset; done
 ```
 
 To rebuild all the figures and analysis, use the scripts provided in the lab directory:

@@ -12,34 +12,38 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.transforms import Normalize, Resize, ToTensor
 
-
 class SAM2_Seg(Base_Segmentation):
     checkpoint_dic = {
-        "hiera_l": "sam2_hiera_large.pt",
+        "hiera_l": "sam2.1_hiera_large.pt",
         "hiera_b": "sam2_hiera_base_plus.pt",
         "hiera_s": "sam2_hiera_small.pt",
         "hiera_t": "sam2_hiera_tiny.pt",
     }
     config_dic = {
-        "hiera_l": "sam2_hiera_l.yaml",
+        "hiera_l": "sam2.1_hiera_l.yaml",
         "hiera_b": "sam2_hiera_b+.yaml",
         "hiera_s": "sam2_hiera_s.yaml",
         "hiera_t": "sam2_hiera_t.yaml",
     }
 
-    def __init__(self, model_type="hiera_l", checkpoint_dir="./checkpoints/segment-anything_2/") -> None:
+    def __init__(
+        self, model_type="hiera_l", checkpoint_dir="./checkpoints/segment-anything_2/", multimask_output=False
+    ) -> None:
         super().__init__()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            self.predictor = SAM2ImagePredictor(
-                build_sam2(
-                    SAM2_Seg.config_dic[model_type],
-                    checkpoint=checkpoint_dir + SAM2_Seg.checkpoint_dic[model_type],
-                )
+
+            sam2_model = build_sam2(
+                SAM2_Seg.config_dic[model_type],
+                ckpt_path=checkpoint_dir + SAM2_Seg.checkpoint_dic[model_type],
             )
+
+            self.predictor = SAM2ImagePredictor(sam2_model)
+
         # self.predictor.eval().to(device)
 
         self.predictor._transforms.to_tensor = lambda x: x
+        self.multimask_output = multimask_output
 
     def scale_image_prompt_to_dim(
         self, image, point_prompt=None, bbox_prompt=None, max_size=1024
@@ -49,7 +53,7 @@ class SAM2_Seg(Base_Segmentation):
             # point_prompt = point_prompt * scale
             point_prompt[..., 0] = point_prompt[..., 0] * W_new
             point_prompt[..., 1] = point_prompt[..., 1] * H_new
-            point_prompt.clamp_(0, max(W_new , H_new ))
+            point_prompt.clamp_(0, max(W_new, H_new))
         if bbox_prompt is not None:
             # bbox_prompt[..., 0] = bbox_prompt[..., 0] * (W_new / W_old)
             # bbox_prompt[..., 2] = bbox_prompt[..., 2] * (W_new / W_old)
@@ -66,7 +70,7 @@ class SAM2_Seg(Base_Segmentation):
     def decode_mask_point(self, point_prompts: torch.Tensor, labels: torch.Tensor):
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             masks, scores, _ = self.predict_torch(
-                point_coords=point_prompts, point_labels=labels, return_logits=True
+                point_coords=point_prompts, point_labels=labels, return_logits=True, multimask_output=self.multimask_output
             )
         return masks, scores
 
@@ -116,7 +120,9 @@ class SAM2_Seg(Base_Segmentation):
         )  # Input size (H, W)
 
         # Forward pass through the model to get the backbone output
-        backbone_out = self.predictor.model.forward_image(processed_image)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            backbone_out = self.predictor.model.forward_image(processed_image)
 
         # Prepare the backbone features
         _, vision_feats, _, _ = self.predictor.model._prepare_backbone_features(

@@ -1,3 +1,4 @@
 _target_: model.segmentation.sam2.SAM2_Seg
 model_type: "hiera_l"
 checkpoint_dir: "./checkpoints/segment-anything_2/"
+multimask_output: true

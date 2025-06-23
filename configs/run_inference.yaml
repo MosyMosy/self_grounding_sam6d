@@ -3,7 +3,7 @@ defaults:
 - machine: local
 - callback: base
 - data: bop
-- model: ISM_sam_prompt #ISM_sam_prompt #ISM_sam  #ISM_fastsam ISM_prompt_quality
+- model: ISM_sam_prompt #ISM_sam_prompt #ISM_sam  #ISM_fastsam ISM_prompt_quality ISM_sam_prompt_sam2 ISM_sam_grid_sam2
 
 - _self_
 - override hydra/hydra_logging: disabled
@@ -14,13 +14,13 @@ hydra:
   run:
     dir: .
 
-prompt_mode: self_grounding # "normal" or "self_grounding"
+prompt_mode: grid # "normal" or "self_grounding" "grid"
 score_mode: normal # "normal" or "self_grounding"
 weight_scores: False
 
 save_dir: ./log/${name_exp}
 name_exp: initial
-dataset_name: lmo
+dataset_name: icbin
 sim_thresh: 0.6
 sg_thresh: 0.7
 num_templates: 42

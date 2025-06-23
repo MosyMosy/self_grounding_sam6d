@@ -1,4 +1,4 @@
-_target_:  model.detector.prompted_segmentation
+_target_: model.detector.prompted_segmentation
 log_interval: 5
 log_dir: ${save_dir}
 segmentor_width_size: 640 # make it stable
@@ -13,7 +13,7 @@ weight_scores: ${weight_scores} # True or False
 num_templates: ${num_templates}
 
 defaults:
-- segmentor_model: sam_main  # sam_2 or sam_main
+- segmentor_model: sam_2 # sam_main or sam_main
 - descriptor_model: dinov2_self_grounding
 
 post_processing_config:
