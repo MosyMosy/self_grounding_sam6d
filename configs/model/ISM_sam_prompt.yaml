@@ -13,7 +13,7 @@ weight_scores: ${weight_scores} # True or False
 num_templates: ${num_templates}
 
 defaults:
-- segmentor_model: sam_2 # sam_main or sam_main
+- segmentor_model: sam_main # sam_main or sam_main
 - descriptor_model: dinov2_self_grounding
 
 post_processing_config:

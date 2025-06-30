@@ -1,40 +1,37 @@
-
 name: SG-SAM
 channels:
-  - xformers
-  - conda-forge
-  - pytorch
-  - nvidia
-  - defaults
+- xformers
+- conda-forge
+- nvidia
+- defaults
+
 dependencies:
-  - pip
-  - python=3.10.0
-  - pip:    
-    - torch
-    - torchvision
-    - fvcore
-    - xformers
-    - torchmetrics==0.10.3
-    - blenderproc
-    - opencv-python 
-    - omegaconf
-    - ruamel.yaml
-    - hydra-colorlog
-    - hydra-core
-    - gdown
-    - pandas
-    - imageio
-    - pyrender    
-    - pycocotools 
-    - distinctipy
-    - git+https://github.com/facebookresearch/segment-anything.git  # SAM
-    - ultralytics==8.0.135  # FastSAM
-    - numpy==1.26.4
-    - ruamel.yaml
-    - scipy
-    - wheel
-    - pandas
-    - imageio
-    - pycocotools
-    - trimesh
-    - ptflops
+- python=3.10.0
+- pytorch=2.5.1
+- torchvision=0.20.1
+- torchaudio=2.5.1
+- pytorch-cuda=11.8
+- pip
+- pip:
+  - fvcore
+  - xformers
+  - torchmetrics==0.10.3
+  - blenderproc
+  - opencv-python
+  - omegaconf
+  - ruamel.yaml
+  - hydra-colorlog
+  - hydra-core
+  - gdown
+  - pandas
+  - imageio
+  - pyrender
+  - pycocotools
+  - distinctipy
+  - git+https://github.com/facebookresearch/segment-anything.git # SAM
+  - ultralytics==8.0.135 # FastSAM
+  - numpy==1.26.4
+  - scipy
+  - wheel
+  - trimesh
+  - ptflops

@@ -27,8 +27,89 @@ from model.segmentation.prompt_helper import get_grid_coordinates
 
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from pytorch3d.ops import sample_farthest_points
 
 
+def shift_and_pad_nonzero_tokens(x):
+    """
+    x: (O, T, N, d) tensor where some tokens may be all-zero (masked)
+    Returns:
+      - padded_tokens: (O, max_L, d) where only non-zero tokens are kept and padded
+      - lengths: (O,) tensor of the number of non-zero tokens per object
+    """
+    O, M, d = x.shape
+    
+
+    # Find non-zero (non-masked) tokens per object
+    nonzero_mask = x.abs().sum(dim=-1) > 0  # (O, M)
+    lengths = nonzero_mask.sum(dim=1)  # (O,)
+
+    max_len = lengths.max().item()
+    padded_tokens = torch.zeros((O, max_len, d), dtype=x.dtype, device=x.device)
+
+    for o in range(O):
+        valid_tokens = x[o][nonzero_mask[o]]  # shape (L_o, d)
+        padded_tokens[o, : valid_tokens.shape[0]] = valid_tokens
+
+    return padded_tokens, lengths
+
+
+def select_prototypes_cascade(x, k, stages=1, tau=0.05):
+    """
+    Cascade prototype selection using token coverage and separation.
+    - x: (O, T, N, d): input token features
+    - k: final number of prototypes to return
+    - stages: number of selection refinement stages
+    - tau: temperature for cosine similarity
+    Returns:
+    - P: (O, k, d) selected prototypes
+    """
+    O, T, N, d = x.shape
+    tokens = x.reshape(O, T * N, d)  # (O, M, d)
+
+    # Initial number of candidates: k × 2^(stages - 1)
+    k_stage = k * (2 ** (stages - 1))
+
+    tokens, lengths = shift_and_pad_nonzero_tokens(tokens)  # (O, M, d), (O,)
+    P = sample_farthest_points(tokens, lengths=lengths, K=k_stage)[0]  # (O, k_stage, d)
+
+    for s in range(stages - 1):
+        k_curr = P.shape[1]
+        k_next = k_curr // 2
+
+        # 1. Coverage score: similarity to own tokens
+        sim_to_own = torch.einsum("okd, omd -> okm", P, tokens)  # (O, k, M)
+        mask = (
+            torch.arange(tokens.shape[1], device=tokens.device)[None, :]
+            < lengths[:, None]
+        )  # (O, M)
+        mask = mask.unsqueeze(1).float()  # (O, 1, M)
+        masked_sim = sim_to_own * mask
+        coverage_score = masked_sim.sum(dim=-1) / (mask.sum(dim=-1) + 1e-6)  # (O, k)
+
+        # 2. Separation score: distance to tokens of all objects
+        P_norm = F.normalize(P, dim=-1)
+        tokens_all = torch.cat(
+            [tokens[o, : lengths[o]] for o in range(O)], dim=0
+        )  # (total_valid_tokens, d)
+        dist_to_all = torch.cdist(P_norm, tokens_all)  # (O, k_curr, OM)
+        separation_score = dist_to_all.mean(dim=-1)  # (O, k_curr)
+
+        # 3. Combined score: prefer high coverage + high separation
+        # Optional: normalize each score across candidates
+        coverage_score = (coverage_score - coverage_score.mean(dim=1, keepdim=True)) / (
+            coverage_score.std(dim=1, keepdim=True) + 1e-6
+        )
+        separation_score = (
+            separation_score - separation_score.mean(dim=1, keepdim=True)
+        ) / (separation_score.std(dim=1, keepdim=True) + 1e-6)
+        final_score = coverage_score + separation_score  # (O, k_curr)
+
+        # 4. Keep top-k_next by score
+        top_idx = final_score.topk(k_next, dim=1).indices  # (O, k_next)
+        P = torch.gather(P, 1, top_idx.unsqueeze(-1).expand(-1, -1, d))
+
+    return P  # shape: (O, k, d)
 
 
 class Instance_Segmentation_Model(pl.LightningModule):
@@ -602,6 +683,12 @@ class prompted_segmentation(Instance_Segmentation_Model):
             self.matching_stage_duration = []
 
             self.move_to_device()
+
+            self.obj_templates_feats_selected = F.normalize(self.ref_data["appe_descriptors"], dim=-1)
+            self.obj_templates_feats_selected = select_prototypes_cascade(
+                self.obj_templates_feats_selected, 8, stages=4
+            )
+
         assert batch["image"].shape[0] == 1, "Batch size must be 1"
 
         proposal_stage_start_time = time.time()
@@ -619,7 +706,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             )
         elif self.prompt_mode == "grid":
             foreground_prompt_locations = get_grid_coordinates(
-                size=(32,32),
+                size=(32, 32),
                 device=self.device,
                 with_offset=True,
             )
@@ -661,7 +748,7 @@ class prompted_segmentation(Instance_Segmentation_Model):
             foreground_prompt_locations[..., 1] = (
                 foreground_prompt_locations[..., 1] / self.descriptor_model.full_size[0]
             )
-        
+
         test_image_sized, point_prompt_scaled, _, _ = (
             self.segmentor_model.scale_image_prompt_to_dim(
                 image=self.inv_rgb_transform(batch["image"][0]).unsqueeze(0),
@@ -817,6 +904,24 @@ class prompted_segmentation(Instance_Segmentation_Model):
         for res in coco_result:
             self.final_results.append(res)
         return 0
+
+    def compute_appearance_score(
+        self, best_pose, pred_objects_idx, qurey_appe_descriptors
+    ):
+        """
+        Based on the best template, calculate appearance similarity indicated by appearance score
+        """
+        con_idx = torch.concatenate(
+            (pred_objects_idx[None, :], best_pose[None, :]), dim=0
+        )
+        ref_appe_descriptors = self.obj_templates_feats_selected[pred_objects_idx]
+
+        aux_metric = MaskedPatch_MatrixSimilarity(metric="cosine", chunk_size=64)
+        appe_scores = aux_metric.compute_straight(
+            qurey_appe_descriptors, ref_appe_descriptors
+        )
+
+        return appe_scores, ref_appe_descriptors
 
     def generate_foreground_prompt(self, batch, threshold=0.4):
         test_image_desc = self.descriptor_model.encode_full_size(batch["image"])[0]
